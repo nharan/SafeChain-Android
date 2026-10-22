@@ -88,7 +88,7 @@ sealed class TangemPay(
         override fun getBaseUrl(apiEnvironment: ApiEnvironment): String {
             return when (apiEnvironment) {
                 ApiEnvironment.DEV -> "https://api.dev.us.paera.com/bff-v2/"
-                ApiEnvironment.MOCK -> "[REDACTED_ENV_URL]"
+                ApiEnvironment.MOCK -> "https://localhost/"
                 ApiEnvironment.PROD -> "https://api.us.paera.com/bff-v2/"
                 ApiEnvironment.DEV_2,
                 ApiEnvironment.DEV_3,
@@ -115,7 +115,7 @@ sealed class TangemPay(
         override fun getBaseUrl(apiEnvironment: ApiEnvironment): String {
             return when (apiEnvironment) {
                 ApiEnvironment.DEV -> "https://api.dev.us.paera.com/"
-                ApiEnvironment.MOCK -> "[REDACTED_ENV_URL]"
+                ApiEnvironment.MOCK -> "https://localhost/"
                 ApiEnvironment.PROD -> "https://api.us.paera.com/"
                 ApiEnvironment.DEV_2,
                 ApiEnvironment.DEV_3,

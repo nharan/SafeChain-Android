@@ -42,41 +42,13 @@ internal class DefaultWalletCardsBackupRepository(
         userWalletId: UserWalletId,
         cards: List<WalletCardBackup>,
         usedSeed: Boolean,
-    ): Either<WalletCardsBackupError, Unit> = withContext(dispatchers.io) {
-        val pending = PendingWalletCardsBackup(
-            id = UUID.randomUUID().toString(),
-            walletId = userWalletId.stringValue,
-            cards = PendingWalletCardsBackupConverter.convert(WalletCardDTOConverter.convertList(cards)),
-            usedSeed = usedSeed,
-        )
+    ): Either<WalletCardsBackupError, Unit> = Unit.right()
 
-        // queued before the request leaves, so a report is never lost to a dead network or a killed process,
-        // and sent by the same drain as everything else so an earlier report still waiting goes out first
-        pendingStore.enqueue(pending)
-
-        drain()
-    }
-
-    override suspend fun sendPendingWalletCards(): Either<WalletCardsBackupError, Unit> =
-        withContext(dispatchers.io) { drain() }
+    override suspend fun sendPendingWalletCards(): Either<WalletCardsBackupError, Unit> = Unit.right()
 
     override suspend fun getWalletCards(
         userWalletId: UserWalletId,
-    ): Either<WalletCardsBackupError, List<WalletCardBackup>> = withContext(dispatchers.io) {
-        tangemTechApi.getWalletCards(walletId = userWalletId.stringValue).fold(
-            onSuccess = { response -> WalletCardBackupConverter.convertList(response.cards).right() },
-            onError = { error ->
-                // an unknown wallet is not a failure: the backend simply has no data about it, same as an
-                // empty cards array
-                if (error.isNetworkError(HttpException.Code.NOT_FOUND)) {
-                    emptyList<WalletCardBackup>().right()
-                } else {
-                    TangemLogger.e("getWalletCards wallet=$userWalletId failed", error)
-                    error.toDomainError().left()
-                }
-            },
-        )
-    }
+    ): Either<WalletCardsBackupError, List<WalletCardBackup>> = emptyList<WalletCardBackup>().right()
 
     /**
      * Sends the queued reports oldest first — the order the backend records them in is the order the backup

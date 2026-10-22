@@ -28,28 +28,9 @@ internal class WalletCardsBackupReporter @Inject constructor(
 
      *                     wallet creation take it from [usedSeedPhrase]
      */
+    @Suppress("UnusedPrivateMember", "UnusedParameter")
     fun report(scanResponse: ScanResponse, cards: List<WalletCardBackup>, usedSeed: Boolean) {
-        if (onboardingV2FeatureToggles.isCardLinkedStatusUpdateEnabled.not()) return
-
-        val userWalletId = UserWalletIdBuilder.scanResponse(scanResponse).build()
-
-        if (userWalletId == null) {
-            TangemLogger.e("Unable to build user wallet id, cards backup state is not reported")
-            return
-        }
-
-        // deliberately not modelScope: an onboarding step navigates away right after it reports, which destroys the
-        // model and would cancel the request mid-flight — the backend would then never learn about a card that is
-        // already linked to a wallet, exactly the state this reporting exists to make visible
-        appScope.launch {
-            reportWalletCardsBackupUseCase(
-                userWalletId = userWalletId,
-                cards = cards,
-                usedSeed = usedSeed,
-            ).onLeft { error ->
-                TangemLogger.e("Unable to report cards backup state: $error")
-            }
-        }
+        // Telemetry disabled: never report card backup status or usedSeed to backend
     }
 
     internal companion object {

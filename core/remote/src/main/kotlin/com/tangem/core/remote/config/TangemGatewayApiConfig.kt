@@ -34,12 +34,12 @@ abstract class TangemGatewayApiConfig : ApiConfig() {
             ApiEnvironment.DEV,
             ApiEnvironment.DEV_2,
             ApiEnvironment.DEV_3,
-            -> "[REDACTED_ENV_URL]"
+            -> "https://localhost/"
             ApiEnvironment.STAGE,
             ApiEnvironment.STAGE_2,
             ApiEnvironment.STAGE_3,
-            -> "[REDACTED_ENV_URL]"
-            ApiEnvironment.MOCK -> "[REDACTED_ENV_URL]"
+            -> "https://localhost/"
+            ApiEnvironment.MOCK -> "https://localhost/"
         }
     }
 }

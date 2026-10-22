@@ -54,43 +54,43 @@ class Express(
 
     private fun createDevEnvironment(): ApiEnvironmentConfig = ApiEnvironmentConfig(
         environment = ApiEnvironment.DEV,
-        baseUrl = "[REDACTED_ENV_URL]",
+        baseUrl = "https://localhost/",
         headers = createHeaders(isProd = false),
     )
 
     private fun createDev2Environment(): ApiEnvironmentConfig = ApiEnvironmentConfig(
         environment = ApiEnvironment.DEV_2,
-        baseUrl = "[REDACTED_ENV_URL]",
+        baseUrl = "https://localhost/",
         headers = createHeaders(isProd = false),
     )
 
     private fun createDev3Environment(): ApiEnvironmentConfig = ApiEnvironmentConfig(
         environment = ApiEnvironment.DEV_3,
-        baseUrl = "[REDACTED_ENV_URL]",
+        baseUrl = "https://localhost/",
         headers = createHeaders(isProd = false),
     )
 
     private fun createStageEnvironment(): ApiEnvironmentConfig = ApiEnvironmentConfig(
         environment = ApiEnvironment.STAGE,
-        baseUrl = "[REDACTED_ENV_URL]",
+        baseUrl = "https://localhost/",
         headers = createHeaders(isProd = false),
     )
 
     private fun createStage2Environment(): ApiEnvironmentConfig = ApiEnvironmentConfig(
         environment = ApiEnvironment.STAGE_2,
-        baseUrl = "[REDACTED_ENV_URL]",
+        baseUrl = "https://localhost/",
         headers = createHeaders(isProd = false),
     )
 
     private fun createStage3Environment(): ApiEnvironmentConfig = ApiEnvironmentConfig(
         environment = ApiEnvironment.STAGE_3,
-        baseUrl = "[REDACTED_ENV_URL]",
+        baseUrl = "https://localhost/",
         headers = createHeaders(isProd = false),
     )
 
     private fun createMockedEnvironment(): ApiEnvironmentConfig = ApiEnvironmentConfig(
         environment = ApiEnvironment.MOCK,
-        baseUrl = "[REDACTED_ENV_URL]",
+        baseUrl = "https://localhost/",
         headers = createHeaders(isProd = false),
     )
 

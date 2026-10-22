@@ -43,19 +43,19 @@ class YieldSupply(
 
     private fun createDevEnvironment(): ApiEnvironmentConfig = ApiEnvironmentConfig(
         environment = ApiEnvironment.DEV,
-        baseUrl = "[REDACTED_ENV_URL]",
+        baseUrl = "https://localhost/",
         headers = createHeaders(ApiEnvironment.DEV),
     )
 
     private fun createStageEnvironment(): ApiEnvironmentConfig = ApiEnvironmentConfig(
         environment = ApiEnvironment.STAGE,
-        baseUrl = "[REDACTED_ENV_URL]",
+        baseUrl = "https://localhost/",
         headers = createHeaders(ApiEnvironment.STAGE),
     )
 
     private fun createMockedEnvironment(): ApiEnvironmentConfig = ApiEnvironmentConfig(
         environment = ApiEnvironment.MOCK,
-        baseUrl = "[REDACTED_ENV_URL]",
+        baseUrl = "https://localhost/",
         headers = createHeaders(ApiEnvironment.MOCK),
     )
 

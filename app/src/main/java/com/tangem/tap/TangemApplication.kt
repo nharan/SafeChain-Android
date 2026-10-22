@@ -165,28 +165,7 @@ open class TangemApplication : Application(), ImageLoaderFactory, Configuration.
     }
 
     fun init() {
-        if (authFeatureToggles.isBackendAuthenticationEnabled) {
-            appScope.launch {
-                // Order matters: registration reads the device public key, so it must wait for
-                // generation to complete. Running them concurrently on first launch would race —
-                // register() would see `DeviceKeyUnavailable` and defer to the next app launch.
-                deviceKeyManager.generateIfMissing()
-                deviceRegistrar.register()
-                    .onLeft { error -> TangemLogger.w("Device registration deferred: $error") }
-                    .onRight {
-                        // Safety net: register any MOBILE wallets that missed it (created before the
-                        // toggle was on, or after a transient failure). Requires the DPoP session from
-                        // device registration, so it runs only once that succeeded. Best-effort —
-                        // loading the wallet list (userWalletsSync) can throw, which must not crash
-                        // startup, so the whole retry is guarded.
-                        runSuspendCatching {
-                            walletRegistrationLauncher.retryMobileRegistrations(
-                                userWalletsListRepository.userWalletsSync(),
-                            )
-                        }.onFailure { error -> TangemLogger.e("Mobile wallet registration retry failed", error) }
-                    }
-            }
-        }
+        // Telemetry & backend device/wallet registration stripped
         walletsRepository = entryPoint.getWalletsRepository()
 
         apiConfigsManager.initialize()
@@ -197,21 +176,11 @@ open class TangemApplication : Application(), ImageLoaderFactory, Configuration.
             TangemLogger.i(excludedBlockchainsManager.toString())
         }
 
-        initAnalytics(application = this, environmentConfig = environmentConfig)
-
-        reportShaderCrashIfDetected()
-
-        initOpenTelemetry()
-
-        abTestsManager.init()
-
         appScope.launch {
             launch(Dispatchers.IO) {
                 loadNativeLibraries()
             }
         }
-
-        ExceptionHandler.append(blockchainExceptionHandler)
 
         tangemLoggingInitializer.initSdkLogging(this)
 
@@ -227,44 +196,14 @@ open class TangemApplication : Application(), ImageLoaderFactory, Configuration.
     }
 
     private fun reportShaderCrashIfDetected() {
-        if (!NorthernLightsCrashGuard.hasDetectedCrash) return
-
-        Analytics.send(
-            TechAnalyticsEvent.ShaderCrashDetected(
-                model = Build.MODEL,
-                manufacturer = Build.MANUFACTURER,
-                hardware = Build.HARDWARE,
-                androidVersion = Build.VERSION.SDK_INT.toString(),
-                crashCount = NorthernLightsCrashGuard.crashCount.toString(),
-            ),
-        )
+        // Telemetry stripped
     }
 
     private fun initAnalytics(application: Application, environmentConfig: EnvironmentConfig) {
-        val factory = AnalyticsFactory()
-        factory.addHandlerBuilder(AmplitudeAnalyticsHandler.Builder())
-        factory.addHandlerBuilder(FirebaseAnalyticsHandler.Builder())
-        factory.addHandlerBuilder(AppsFlyerAnalyticsHandler.Builder(appsFlyerClientFactory))
-
-        factory.addHandlerBuilder(CustomerIoAnalyticsHandler.Builder())
-        factory.addHandlerBuilder(OpenTelemetryAnalyticsHandler.Builder(openTelemetryMetricsHolder))
-
-        factory.addFilter(oneTimeEventFilter)
-        factory.addFilter(AppsFlyerEventFilter())
-
-        val buildData = AnalyticsHandlerBuilder.Data(
-            application = application,
-            config = environmentConfig,
-            isDebug = BuildConfig.DEBUG,
-            logConfig = LogConfig.analyticsHandlers,
-        )
-
-        Analytics.addParamsInterceptor(interceptor = sendTransactionSignerInfoInterceptor)
-
-        factory.build(Analytics, buildData)
+        // Telemetry stripped: Amplitude, Firebase, AppsFlyer, Customer.io, OpenTelemetry disabled
     }
 
     private fun initOpenTelemetry() {
-        openTelemetryMetricsHolder.initialize()
+        // Telemetry stripped
     }
 }

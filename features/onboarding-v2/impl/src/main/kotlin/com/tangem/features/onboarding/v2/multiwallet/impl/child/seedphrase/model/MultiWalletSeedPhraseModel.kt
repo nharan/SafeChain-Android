@@ -37,6 +37,7 @@ import com.tangem.features.onboarding.v2.multiwallet.impl.child.seedphrase.model
 import com.tangem.features.onboarding.v2.multiwallet.impl.child.seedphrase.model.builder.ImportSeedPhraseUiStateBuilder
 import com.tangem.features.onboarding.v2.multiwallet.impl.child.seedphrase.model.builder.SeedPhraseCheckUiStateBuilder
 import com.tangem.features.onboarding.v2.multiwallet.impl.child.seedphrase.ui.state.MultiWalletSeedPhraseUM
+import com.tangem.features.onboarding.v2.multiwallet.impl.common.AirplaneModeGuardrail
 import com.tangem.features.onboarding.v2.multiwallet.impl.common.WalletCardsBackupReporter
 import com.tangem.features.onboarding.v2.multiwallet.impl.common.ui.resetCardDialog
 import com.tangem.hot.sdk.exception.PassphraseNulCharacterException
@@ -179,6 +180,9 @@ internal class MultiWalletSeedPhraseModel @Inject constructor(
     }
 
     private fun openGeneratedSeedPhrase() {
+        if (!AirplaneModeGuardrail.requireOfflineOrWarn(uiMessageSender, "Generating Seed Phrase")) {
+            return
+        }
         val words12 = state.value.generatedWords12 ?: return
         val words24 = state.value.generatedWords24 ?: return
 
@@ -194,6 +198,9 @@ internal class MultiWalletSeedPhraseModel @Inject constructor(
     }
 
     private fun openImportSeedPhrase() {
+        if (!AirplaneModeGuardrail.requireOfflineOrWarn(uiMessageSender, "Importing Seed Phrase")) {
+            return
+        }
         analyticsEventHandler.send(OnboardingAnalyticsEvent.SeedPhrase.ImportSeedPhraseScreenOpened())
         _uiState.value = importSeedPhraseUiStateBuilder.getState()
     }
@@ -216,6 +223,19 @@ internal class MultiWalletSeedPhraseModel @Inject constructor(
     private fun importWallet(mnemonic: Mnemonic, passphrase: String?, generatedSeedPhrase: Boolean) {
         val currentState = state.value
         if (currentState.readyToImport.not()) return
+
+        val radioStatus = AirplaneModeGuardrail.checkStatus()
+        if (!radioStatus.isStrictlyOffline) {
+            uiMessageSender.send(AirplaneModeGuardrail.buildBlockedDialogMessage("Seed Phrase Wallet Import", radioStatus))
+            updateDialog(
+                AirplaneModeGuardrail.buildOnboardingDialogUM(
+                    actionName = "Seed Phrase Wallet Import",
+                    status = radioStatus,
+                    onDismiss = { updateDialog(null) },
+                ),
+            )
+            return
+        }
 
         val scanResponse = params.parentParams.scanResponse
 
@@ -246,39 +266,11 @@ internal class MultiWalletSeedPhraseModel @Inject constructor(
                         primaryCard = result.data.primaryCard,
                     )
 
-                    analyticsHandler.send(
-                        OnboardingAnalyticsEvent.CreateWallet.WalletCreatedSuccessfully(
-                            creationType = if (generatedSeedPhrase) {
-                                AnalyticsParam.WalletCreationType.NewSeed
-                            } else {
-                                AnalyticsParam.WalletCreationType.SeedImport
-                            },
-                            seedPhraseLength = mnemonic.mnemonicComponents.size,
-                            passPhraseState = if (passphrase.isNullOrBlank()) {
-                                AnalyticsParam.EmptyFull.Empty
-                            } else {
-                                AnalyticsParam.EmptyFull.Full
-                            },
-                            referralId = appsFlyerRepository.getConversionData()?.refcode,
-                        ),
-                    )
-
                     multiWalletState.update {
                         it.copy(currentScanResponse = updatedScanResponse)
                     }
 
                     cardRepository.startCardActivation(cardId = result.data.card.cardId)
-
-                    walletCardsBackupReporter.report(
-                        scanResponse = updatedScanResponse,
-                        cards = listOf(
-                            CardBackupConverter.convert(
-                                card = updatedScanResponse.card,
-                                role = WalletCardBackup.Role.PRIMARY,
-                            ),
-                        ),
-                        usedSeed = true,
-                    )
 
                     onDone.emit(Unit)
                 }

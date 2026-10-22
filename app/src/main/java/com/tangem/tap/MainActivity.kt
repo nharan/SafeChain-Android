@@ -495,15 +495,7 @@ class MainActivity : AppCompatActivity(), ActivityResultCallbackHolder {
     }
 
     private fun sendPendingWalletCardsBackups() {
-        if (onboardingV2FeatureToggles.isCardLinkedStatusUpdateEnabled.not()) return
-
-        // deliberately not lifecycleScope: a drain cut short by the activity being destroyed would leave a
-        // report the backend has already accepted still queued, to be sent again on the next launch
-        appScope.launch {
-            sendPendingWalletCardsBackupUseCase().onLeft { error ->
-                TangemLogger.e("Pending cards backup reports deferred: $error")
-            }
-        }
+        // Telemetry stripped: do not drain pending wallet card backup reports to backend
     }
 
     private fun checkGoogleServicesAvailability() {

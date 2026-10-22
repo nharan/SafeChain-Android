@@ -41,7 +41,7 @@ object Analytics : GlobalAnalyticsEventHandler {
         get() = handlers.values.toList()
 
     override fun addHandler(name: String, handler: AnalyticsHandler) {
-        handlers[name] = handler
+        // Telemetry stripped: do not register any analytics handlers
     }
 
     override fun removeHandler(name: String): AnalyticsHandler? {
@@ -49,7 +49,7 @@ object Analytics : GlobalAnalyticsEventHandler {
     }
 
     override fun addFilter(filter: AnalyticsEventFilter) {
-        analyticsFilters.add(filter)
+        // Telemetry stripped
     }
 
     override fun removeFilter(filter: AnalyticsEventFilter): Boolean {
@@ -57,7 +57,7 @@ object Analytics : GlobalAnalyticsEventHandler {
     }
 
     override fun addParamsInterceptor(interceptor: ParamsInterceptor) {
-        paramsInterceptors[interceptor.id()] = interceptor
+        // Telemetry stripped
     }
 
     override fun removeParamsInterceptor(interceptorId: String): ParamsInterceptor? {
@@ -65,65 +65,23 @@ object Analytics : GlobalAnalyticsEventHandler {
     }
 
     override fun setUserId(userId: String) {
-        analyticsScope.launch {
-            val userIdHash = userId.hexToBytes()
-                .calculateSha256()
-                .toHexString()
-
-            analyticsMutex.withLock {
-                analyticsHandlers.filterIsInstance<AnalyticsUserIdHandler>()
-                    .forEach { handler -> handler.setUserId(userIdHash) }
-            }
-        }
+        // Telemetry stripped: never set or hash userId
     }
 
     override fun clearUserId() {
-        analyticsScope.launch {
-            analyticsMutex.withLock {
-                analyticsHandlers.filterIsInstance<AnalyticsUserIdHandler>()
-                    .forEach { handler -> handler.clearUserId() }
-            }
-        }
+        // Telemetry stripped
     }
 
     override fun send(event: AnalyticsEvent) {
-        analyticsScope.launch {
-            if (event is OneTimePerSessionEvent && !shouldSendThrottledEvent(event)) {
-                return@launch
-            }
-            val eventWithParams = event.withParams(applyParamsInterceptors(event))
-            val eventFilter = analyticsFilters.firstOrNull { it.canBeAppliedTo(eventWithParams) }
-
-            analyticsMutex.withLock {
-                when {
-                    eventFilter == null -> analyticsHandlers.forEach { handler -> handler.send(eventWithParams) }
-                    eventFilter.canBeSent(eventWithParams) -> {
-                        analyticsHandlers
-                            .filter { handler -> eventFilter.canBeConsumedByHandler(handler, eventWithParams) }
-                            .forEach { handler -> handler.send(eventWithParams) }
-                    }
-                }
-            }
-        }
+        // Telemetry stripped: drop all analytics events
     }
 
     override fun sendErrorEvent(event: AnalyticsEvent) {
-        analyticsScope.launch {
-            val eventWithParams = event.withParams(applyParamsInterceptors(event))
-            analyticsMutex.withLock {
-                analyticsHandlers.filterIsInstance<AnalyticsErrorHandler>()
-                    .forEach { handler -> handler.sendErrorEvent(eventWithParams) }
-            }
-        }
+        // Telemetry stripped: drop all error analytics events
     }
 
     override fun sendException(event: ExceptionAnalyticsEvent) {
-        analyticsScope.launch {
-            analyticsMutex.withLock {
-                analyticsHandlers.filterIsInstance<AnalyticsExceptionHandler>()
-                    .forEach { it.sendException(event) }
-            }
-        }
+        // Telemetry stripped: drop all exception analytics events
     }
 
     private suspend fun applyParamsInterceptors(event: AnalyticsEvent): MutableMap<String, String> {

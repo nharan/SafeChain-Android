@@ -39,6 +39,7 @@ import com.tangem.features.onboarding.v2.multiwallet.impl.child.finalize.MultiWa
 import com.tangem.features.onboarding.v2.multiwallet.impl.child.scanprimary.MultiWalletScanPrimaryComponent
 import com.tangem.features.onboarding.v2.multiwallet.impl.child.seedphrase.MultiWalletSeedPhraseComponent
 import com.tangem.features.onboarding.v2.multiwallet.impl.child.upgradewallet.MultiWalletUpgradeWalletComponent
+import com.tangem.features.onboarding.v2.multiwallet.impl.common.AirplaneModeGuardrail
 import com.tangem.features.onboarding.v2.multiwallet.impl.model.OnboardingMultiWalletModel
 import com.tangem.features.onboarding.v2.multiwallet.impl.model.OnboardingMultiWalletState
 import com.tangem.features.onboarding.v2.multiwallet.impl.model.OnboardingMultiWalletState.Step.*
@@ -138,6 +139,7 @@ internal class DefaultOnboardingMultiWalletComponent @AssistedInject constructor
     )
 
     init {
+        AirplaneModeGuardrail.registerContext(activity.applicationContext)
         componentScope.launch {
             // access code bs result
             childParams.multiWalletState
@@ -279,7 +281,12 @@ internal class DefaultOnboardingMultiWalletComponent @AssistedInject constructor
         }
     }
 
-    private fun openAccessCodeBottomSheet() { bottomSheetNavigation.navigate { } }
+    private fun openAccessCodeBottomSheet() {
+        if (!AirplaneModeGuardrail.requireOfflineOrWarn(messageSender, "Finalizing Backup & Setting Access Code")) {
+            return
+        }
+        bottomSheetNavigation.navigate { }
+    }
 
     @OptIn(FaultyDecomposeApi::class)
     @Composable

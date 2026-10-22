@@ -31,23 +31,7 @@ class OpenTelemetryMetricsHolder @Inject constructor(
     private var client: OpenTelemetryMetricsClient? = null
 
     fun initialize() {
-        val apiKey = environmentConfig.otlpApiKey
-        if (!featureToggles.isMetricsEnabled || apiKey.isNullOrEmpty()) return
-
-        // telemetry must never crash the app, so setup failures are logged and swallowed
-        appScope.launch(dispatchers.io) {
-            runCatching {
-                OpenTelemetryMetricsClient(
-                    application = application,
-                    apiKey = apiKey,
-                    settingsRepository = settingsRepository,
-                    scope = appScope,
-                    dispatchers = dispatchers,
-                ).apply { start(application) }
-            }
-                .onSuccess { client = it }
-                .onFailure { TangemLogger.e("OpenTelemetry metrics init failed", it) }
-        }
+        // Telemetry stripped: OpenTelemetry metrics disabled
     }
 
     fun getMeter(): Meter? = client?.getMeter()

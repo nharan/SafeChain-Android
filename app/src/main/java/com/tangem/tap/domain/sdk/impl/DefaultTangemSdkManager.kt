@@ -470,13 +470,7 @@ internal class DefaultTangemSdkManager(
         runnable: CardSessionRunnable<T>,
         shouldForceRegistration: Boolean,
     ): CardSessionRunnable<T> {
-        if (!authFeatureToggles.isBackendAuthenticationEnabled) return runnable
-
-        return RegisterColdWalletRunnable(
-            inner = runnable,
-            launcher = walletRegistrationLauncher.get(),
-            shouldForceRegistration = shouldForceRegistration,
-        )
+        return runnable
     }
 
     @Suppress("MagicNumber")

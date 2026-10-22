@@ -9,5 +9,5 @@ internal class DefaultAuthFeatureToggles @Inject constructor(
 ) : AuthFeatureToggles {
 
     override val isBackendAuthenticationEnabled: Boolean
-        get() = featureTogglesManager.isFeatureEnabled(FeatureToggles.AND_15438_BACKEND_AUTHENTICATION_ENABLED)
+        get() = false
 }

@@ -50,7 +50,7 @@ class P2PEthPool(
     private fun createMockEnvironment(): ApiEnvironmentConfig {
         return ApiEnvironmentConfig(
             environment = ApiEnvironment.MOCK,
-            baseUrl = "[REDACTED_ENV_URL]",
+            baseUrl = "https://localhost/",
             headers = createHeaders(),
         )
     }

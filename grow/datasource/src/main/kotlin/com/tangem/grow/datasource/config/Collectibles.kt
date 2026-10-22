@@ -46,19 +46,19 @@ class Collectibles(
 
     private fun createDevEnvironment(): ApiEnvironmentConfig = ApiEnvironmentConfig(
         environment = ApiEnvironment.DEV,
-        baseUrl = "[REDACTED_ENV_URL]",
+        baseUrl = "https://localhost/",
         headers = createHeaders(),
     )
 
     private fun createMockedEnvironment(): ApiEnvironmentConfig = ApiEnvironmentConfig(
         environment = ApiEnvironment.MOCK,
-        baseUrl = "[REDACTED_ENV_URL]",
+        baseUrl = "https://localhost/",
         headers = createHeaders(),
     )
 
     private fun createProdEnvironment(): ApiEnvironmentConfig = ApiEnvironmentConfig(
         environment = ApiEnvironment.PROD,
-        baseUrl = "[REDACTED_ENV_URL]", // TODO Collectibles replace with actual prod env
+        baseUrl = "https://localhost/", // TODO Collectibles replace with actual prod env
         headers = createHeaders(),
     )
 

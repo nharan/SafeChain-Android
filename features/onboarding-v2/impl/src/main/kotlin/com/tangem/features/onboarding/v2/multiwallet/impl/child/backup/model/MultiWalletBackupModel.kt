@@ -14,6 +14,7 @@ import com.tangem.core.decompose.model.Model
 import com.tangem.core.decompose.model.ParamsContainer
 import com.tangem.core.decompose.ui.UiMessageSender
 import com.tangem.core.ui.extensions.resourceReference
+import com.tangem.core.ui.extensions.stringReference
 import com.tangem.core.ui.extensions.toWrappedList
 import com.tangem.core.ui.message.dialog.Dialogs
 import com.tangem.domain.card.repository.CardRepository
@@ -32,6 +33,7 @@ import com.tangem.features.onboarding.v2.multiwallet.impl.child.backup.ui.backup
 import com.tangem.features.onboarding.v2.multiwallet.impl.child.backup.ui.onlyOneBackupDeviceDialog
 import com.tangem.features.onboarding.v2.multiwallet.impl.child.backup.ui.resetBackupCardDialog
 import com.tangem.features.onboarding.v2.multiwallet.impl.child.backup.ui.state.MultiWalletBackupUM
+import com.tangem.features.onboarding.v2.multiwallet.impl.common.AirplaneModeGuardrail
 import com.tangem.features.onboarding.v2.multiwallet.impl.common.WalletCardsBackupReporter
 import com.tangem.features.onboarding.v2.multiwallet.impl.common.usedSeedPhrase
 import com.tangem.sdk.api.BackupServiceHolder
@@ -105,7 +107,9 @@ internal class MultiWalletBackupModel @Inject constructor(
     private fun getInitState(): MultiWalletBackupUM {
         return MultiWalletBackupUM(
             title = resourceReference(R.string.onboarding_title_no_backup_cards),
-            bodyText = resourceReference(R.string.onboarding_subtitle_no_backup_cards),
+            bodyText = stringReference(
+                "Add up to 2 blank backup cards. (Only public factory certificates are checked here; zero private keys leave the Ring until Finalize.)",
+            ),
             finalizeButtonEnabled = false,
             addBackupButtonEnabled = true,
             addBackupButtonLoading = false,
@@ -142,11 +146,26 @@ internal class MultiWalletBackupModel @Inject constructor(
                         eventFlow.emit(MultiWalletBackupComponent.Event.TwoDeviceAdded)
                     }
                     params.multiWalletState.update { it.copy(isThreeCards = true) }
+                    val radioStatus = AirplaneModeGuardrail.checkStatus()
+                    val promptDialog = if (!radioStatus.isStrictlyOffline) {
+                        AirplaneModeGuardrail.buildBackupDialogUM(
+                            titleText = "✈️ TURN ON AIRPLANE MODE NOW",
+                            bodyText = "Both blank backup cards are now linked (no private keys have left the Ring yet).\n\n" +
+                                "The next step ('Finalize the backup') will set your Access Code and transfer the encrypted private keys from the Ring to the 2 cards.\n\n" +
+                                "Please turn ON Airplane Mode and disable Wi-Fi & Mobile Data NOW before tapping 'Finalize the backup'.",
+                            onDismiss = { _uiState.update { it.copy(dialog = null) } },
+                        )
+                    } else {
+                        st.dialog
+                    }
                     st.copy(
                         title = resourceReference(R.string.onboarding_title_two_backup_cards),
-                        bodyText = resourceReference(R.string.onboarding_subtitle_two_backup_cards),
+                        bodyText = stringReference(
+                            "✅ 2 backup cards linked! ✈️ Turn ON Airplane Mode (and turn OFF Wi-Fi & Mobile Data) NOW before tapping 'Finalize the backup'.",
+                        ),
                         addBackupButtonEnabled = false,
                         finalizeButtonEnabled = true,
+                        dialog = promptDialog,
                     )
                 }
                 else -> st.copy(addBackupButtonEnabled = false)
@@ -155,6 +174,22 @@ internal class MultiWalletBackupModel @Inject constructor(
     }
 
     private fun onFinalizeClick(fromDialog: Boolean = false) {
+        val radioStatus = AirplaneModeGuardrail.checkStatus()
+        if (!radioStatus.isStrictlyOffline) {
+            _uiState.update {
+                it.copy(
+                    dialog = AirplaneModeGuardrail.buildBackupDialogUM(
+                        titleText = "🛑 AIRPLANE MODE REQUIRED",
+                        bodyText = "Hardened Security Guardrail blocked: Finalizing Backup.\n\n" +
+                            "Current Status: ${radioStatus.describeActiveRadios()}\n\n" +
+                            "Encrypted private keys will leave the Ring in the next step. Please turn ON Airplane Mode and ensure Wi-Fi & Mobile Data are completely OFF before tapping 'Finalize the backup'.",
+                        onDismiss = { _uiState.update { st -> st.copy(dialog = null) } },
+                    ),
+                )
+            }
+            return
+        }
+
         when (state.value.numberOfBackupCards) {
             1 -> {
                 params.multiWalletState.update { it.copy(isThreeCards = false) }
@@ -242,8 +277,12 @@ internal class MultiWalletBackupModel @Inject constructor(
                         is TangemSdkError.IssuerSignatureLoadingFailed -> {
                             _uiState.update { st ->
                                 st.copy(
-                                    dialog = backupCardAttestationFailedDialog(
+                                    dialog = AirplaneModeGuardrail.buildBackupDialogUM(
+                                        titleText = "ℹ️ Factory Certificate Not Cached",
+                                        bodyText = "This blank card's factory certificate isn't cached yet.\n\n" +
+                                            "SAFE TO BRIEFLY USE WI-FI NOW: Zero private keys have left the Ring at this step. You may briefly turn ON Wi-Fi just to link the 2 blank backup cards. The app will require Airplane Mode again BEFORE Finalize.",
                                         onDismiss = { _uiState.update { it.copy(dialog = null) } },
+                                        showSettingsButton = true,
                                     ),
                                 )
                             }

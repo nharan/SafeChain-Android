@@ -44,6 +44,7 @@ import com.tangem.features.onboarding.v2.multiwallet.api.OnboardingMultiWalletCo
 import com.tangem.features.onboarding.v2.multiwallet.impl.child.MultiWalletChildParams
 import com.tangem.features.onboarding.v2.multiwallet.impl.child.finalize.MultiWalletFinalizeComponent
 import com.tangem.features.onboarding.v2.multiwallet.impl.child.finalize.ui.state.MultiWalletFinalizeUM
+import com.tangem.features.onboarding.v2.multiwallet.impl.common.AirplaneModeGuardrail
 import com.tangem.features.onboarding.v2.multiwallet.impl.common.WalletCardsBackupReporter
 import com.tangem.features.onboarding.v2.multiwallet.impl.common.usedSeedPhrase
 import com.tangem.features.onboarding.v2.multiwallet.impl.common.ui.resetCardDialog
@@ -173,6 +174,26 @@ internal class MultiWalletFinalizeModel @Inject constructor(
     }
 
     private fun onLinkClick() {
+        val radioStatus = AirplaneModeGuardrail.checkStatus()
+        if (!radioStatus.isStrictlyOffline) {
+            uiMessageSender.send(
+                AirplaneModeGuardrail.buildBlockedDialogMessage(
+                    actionName = "Encrypted Private Key Transfer (Finalize)",
+                    status = radioStatus,
+                ),
+            )
+            _uiState.update { st ->
+                st.copy(
+                    dialog = AirplaneModeGuardrail.buildOnboardingDialogUM(
+                        actionName = "Encrypted Private Key Transfer (Finalize)",
+                        status = radioStatus,
+                        onDismiss = { _uiState.update { it.copy(dialog = null) } },
+                    ),
+                )
+            }
+            return
+        }
+
         when (_uiState.value.step) {
             MultiWalletFinalizeUM.Step.Primary -> {
                 writePrimaryCard()
@@ -418,38 +439,8 @@ internal class MultiWalletFinalizeModel @Inject constructor(
         }
     }
 
-    /**
-     * Reports every card of the wallet after one of them has been finalized: the finalized ones with the status and
-     * curves the card itself returned, the remaining backup cards as still not backed up.
-     */
     private fun reportFinalizedCard(role: WalletCardBackup.Role, card: CardDTO) {
-        finalizedCards[role] = card
-
-        val scanResponse = multiWalletState.value.currentScanResponse
-        // when the primary card was finalized in an earlier session, the scan response is all the app knows about it
-        val primaryCard = finalizedCards[WalletCardBackup.Role.PRIMARY] ?: scanResponse.card
-
-        val cards = buildList {
-            add(CardBackupConverter.convert(card = primaryCard, role = WalletCardBackup.Role.PRIMARY))
-
-            WalletCardsBackupReporter.BACKUP_ROLES.forEachIndexed { index, backupRole ->
-                val finalizedCard = finalizedCards[backupRole]
-
-                if (finalizedCard != null) {
-                    add(CardBackupConverter.convert(card = finalizedCard, role = backupRole))
-                } else {
-                    notFinalizedBackupCard(index = index, role = backupRole)?.let(::add)
-                }
-            }
-        }
-
-        walletCardsBackupReporter.report(
-            // the finalized primary card is what carries the wallet id: on the newest firmware the wallet appears on
-            // the card only once the primary card is finalized
-            scanResponse = scanResponse.copy(card = primaryCard),
-            cards = cards,
-            usedSeed = scanResponse.usedSeedPhrase(),
-        )
+        // Telemetry stripped: do not report finalized card backup or usedSeed status
     }
 
     /**
