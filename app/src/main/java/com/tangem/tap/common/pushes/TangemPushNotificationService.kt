@@ -17,14 +17,11 @@ internal class TangemPushNotificationService : FirebaseMessagingService() {
 
     override fun onNewToken(token: String) {
         super.onNewToken(token)
-        TangemLogger.d("New FCM token received: $token")
-
-        CustomerIOFirebaseMessagingService.onNewToken(applicationContext, token)
+        // Hardened build: never log FCM tokens or forward them to Customer.io / Tangem backend
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
         super.onMessageReceived(message)
-
-        pushMessageDispatcher.dispatch(message)
+        // Hardened build: ignore remote push messages
     }
 }

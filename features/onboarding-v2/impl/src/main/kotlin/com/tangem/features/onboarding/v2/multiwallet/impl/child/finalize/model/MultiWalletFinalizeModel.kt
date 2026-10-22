@@ -434,7 +434,7 @@ internal class MultiWalletFinalizeModel @Inject constructor(
                 cardId = scanResponse.card.cardId,
                 hasBackupError = hasWalletBackupError,
             )
-            backupServiceHolder.backupService.get()?.discardSavedBackup()
+            backupServiceHolder.clearActiveSession()
             onEvent.emit(MultiWalletFinalizeComponent.Event.ThreeBackupCardsAdded)
         }
     }
@@ -547,7 +547,7 @@ internal class MultiWalletFinalizeModel @Inject constructor(
         override fun onComplete() {
             modelScope.launch {
                 onboardingRepository.clearUnfinishedFinalizeOnboarding()
-                backupServiceHolder.backupService.get()?.discardSavedBackup()
+                backupServiceHolder.clearActiveSession()
                 onEvent.emit(MultiWalletFinalizeComponent.Event.ExitFromFlow)
             }
         }

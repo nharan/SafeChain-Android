@@ -32,18 +32,11 @@ internal class DefaultWalletServerBinder(
     }
 
     override suspend fun bind(userWallet: UserWallet): ApiResponse<Unit> {
-        val conversionData = appsFlyerRepository.getConversionData()
-
-        return withContext(dispatchers.io) {
-            tangemTechApi.createWallet(
-                body = WalletIdBodyConverter.convert(userWallet, conversionData),
-            )
-        }.also { response ->
-            val eTag = response.headers[ETAG_HEADER]?.firstOrNull()
-            TangemLogger.i(
-                "bind wallet=${userWallet.walletId}: createWallet code=${(response as? ApiResponse.Success)?.code}, " +
-                    "hasETag=${eTag != null}, eTagNotEmpty=${!eTag.isNullOrEmpty()}",
-            )
-        }
+        // Hardened build: never register walletId or AppsFlyer conversion data with Tangem backend
+        return ApiResponse.Success(
+            data = Unit,
+            code = com.tangem.core.remote.response.ApiResponseError.HttpException.Code.CREATED,
+            headers = mapOf(ETAG_HEADER to listOf("local-only-etag")),
+        )
     }
 }

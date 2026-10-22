@@ -16,8 +16,7 @@ class SyncWalletWithRemoteUseCase(
 ) {
 
     suspend operator fun invoke(userWalletId: UserWalletId): WalletSyncResult {
-        return runSuspendCatching { walletsRepository.createWallet(userWalletId) }
-            .onFailure { TangemLogger.e("Error", it) }
-            .getOrDefault(WalletSyncResult.AlreadyExists)
+        // Hardened build: never sync or register walletId with Tangem remote backend
+        return WalletSyncResult.AlreadyExists
     }
 }

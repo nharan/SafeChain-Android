@@ -37,21 +37,9 @@ internal class DefaultPushNotificationsRepository @Inject constructor(
     private val dispatchers: CoroutineDispatcherProvider,
 ) : PushNotificationsRepository {
 
-    override suspend fun createApplicationId(pushToken: String?): ApplicationId = withContext(dispatchers.io) {
-        val appId = tangemTechApi.createApplicationId(
-            NotificationApplicationCreateBody(
-                platform = appInfoProvider.platform.lowercase(),
-                device = appInfoProvider.device,
-                systemVersion = appInfoProvider.osVersion,
-                language = appInfoProvider.language,
-                timezone = appInfoProvider.timezone,
-                version = appInfoProvider.appVersion,
-                pushToken = pushToken,
-                appsflyerId = appsFlyerRepository.getUID(),
-            ),
-        ).getOrThrow().appId
-
-        ApplicationId(appId)
+    override suspend fun createApplicationId(pushToken: String?): ApplicationId {
+        // Hardened build: never register device metadata, AppsFlyer UID, or push tokens with Tangem backend
+        return ApplicationId("local-disabled")
     }
 
     override suspend fun saveApplicationId(appId: ApplicationId) {
@@ -69,37 +57,13 @@ internal class DefaultPushNotificationsRepository @Inject constructor(
         }
     }
 
-    override suspend fun sendPushToken(appId: ApplicationId, pushToken: String): Either<NotificationsError, Unit> =
-        withContext(dispatchers.io) {
-            val response = tangemTechApi.updatePushTokenForApplicationId(
-                appId.value,
-                NotificationApplicationCreateBody(
-                    pushToken = pushToken,
-                    systemVersion = appInfoProvider.osVersion,
-                    language = appInfoProvider.language,
-                    timezone = appInfoProvider.timezone,
-                    version = appInfoProvider.appVersion,
-                ),
-            )
-            when (response) {
-                is ApiResponse.Success -> Unit.right()
-                is ApiResponse.Error -> {
-                    val cause = response.cause
-                    if (cause is ApiResponseError.HttpException &&
-                        cause.code == ApiResponseError.HttpException.Code.NOT_FOUND
-                    ) {
-                        NotificationsError.ApplicationIdNotFound.left()
-                    } else {
-                        NotificationsError.DataError(cause.message ?: "Unknown error").left()
-                    }
-                }
-            }
-        }
+    override suspend fun sendPushToken(appId: ApplicationId, pushToken: String): Either<NotificationsError, Unit> {
+        // Hardened build: never send push token or OS/timezone telemetry to Tangem backend
+        return Unit.right()
+    }
 
-    override suspend fun getEligibleNetworks(): List<NotificationsEligibleNetwork> = withContext(dispatchers.io) {
-        tangemTechApi.getEligibleNetworksForPushNotifications().getOrThrow().mapNotNull {
-            NotificationsEligibleNetworkConverter.convert(it)
-        }
+    override suspend fun getEligibleNetworks(): List<NotificationsEligibleNetwork> {
+        return emptyList()
     }
 
     override suspend fun isNotificationsEnabled(userWalletId: UserWalletId): Boolean =

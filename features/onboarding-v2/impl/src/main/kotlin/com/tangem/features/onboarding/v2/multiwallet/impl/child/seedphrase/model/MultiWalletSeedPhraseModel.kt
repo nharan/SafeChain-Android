@@ -166,8 +166,10 @@ internal class MultiWalletSeedPhraseModel @Inject constructor(
                 openImportSeedPhrase()
             },
             onGenerateSeedPhraseClicked = {
-                generateSeedPhrase()
-                openGeneratedSeedPhrase()
+                if (AirplaneModeGuardrail.requireOfflineOrWarn(uiMessageSender, "Generating Seed Phrase")) {
+                    generateSeedPhrase()
+                    openGeneratedSeedPhrase()
+                }
             },
             onLearnMoreClicked = {
                 modelScope.launch {
@@ -206,6 +208,9 @@ internal class MultiWalletSeedPhraseModel @Inject constructor(
     }
 
     private fun generateSeedPhrase() {
+        if (!AirplaneModeGuardrail.requireOfflineOrWarn(uiMessageSender, "Generating Seed Phrase")) {
+            return
+        }
         val words12 = mnemonicRepository.generateMnemonic(MnemonicRepository.MnemonicType.Words12)
         val words24 = mnemonicRepository.generateMnemonic(MnemonicRepository.MnemonicType.Words24)
 

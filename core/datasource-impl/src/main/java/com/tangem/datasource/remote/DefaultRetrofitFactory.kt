@@ -230,8 +230,8 @@ internal class DefaultRetrofitFactory @Inject constructor(
     private fun OkHttpClient.Builder.addLoggers(apiConfigId: ApiConfig.ID, context: Context): OkHttpClient.Builder {
         if (apiConfigs[apiConfigId.name]?.isLoggable == false) return this
 
+        // Hardened build: never install ChuckerInterceptor (SQLite disk persistence) in any build variant
         return if (BuildConfig.LOG_ENABLED) {
-            addInterceptor(interceptor = ChuckerInterceptor(context))
             addInterceptor(interceptor = createNetworkLoggingInterceptor())
         } else {
             this

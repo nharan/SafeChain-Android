@@ -17,7 +17,7 @@ internal class BlockchainProvidersResponseMerger @Inject internal constructor(
     private val analyticsExceptionHandler: AnalyticsExceptionHandler,
 ) {
 
-    private val forbiddenSchemes = listOf("wss://")
+    private val requiredHttpsPrefix = "https://"
 
     /**
      * Merge blockchains with non-empty providers from [remote] with blockchains from [local]
@@ -38,8 +38,21 @@ internal class BlockchainProvidersResponseMerger @Inject internal constructor(
             .filterValues { it.isNotEmpty() }
 
         val result = (local + remoteWithoutInvalidProviders).mapValues { (key, providers) ->
-            val localProviders = local[key].orEmpty()
-            (localProviders + providers).distinct()
+            if (key in remoteWithoutInvalidProviders) {
+                val remoteNormalized = providers.map { it.addSlashIfAbsent() }.toSet()
+                val localPublicProviders = local[key]
+                    .orEmpty()
+                    .filterUnsupportedProviders()
+                    .filterInvalidProviders()
+                    .filterIsInstance<ProviderModel.Public>()
+                    .map { it.addSlashIfAbsent() }
+                    .filterNot { it in remoteNormalized }
+                (localPublicProviders + providers).distinct()
+            } else {
+                providers
+                    .filterUnsupportedProviders()
+                    .filterInvalidProviders()
+            }
         }
 
         if (result != remote) {
@@ -73,10 +86,10 @@ internal class BlockchainProvidersResponseMerger @Inject internal constructor(
     }
 
     private fun isValidUrl(url: String): Boolean {
-        val forbiddenScheme = forbiddenSchemes.firstOrNull { url.startsWith(prefix = it) }
-        val inputUrl = if (forbiddenScheme != null) url.substringAfter(forbiddenScheme) else url
-
-        return PatternsCompat.WEB_URL.matcher(inputUrl).matches()
+        if (!url.startsWith(prefix = requiredHttpsPrefix, ignoreCase = true)) {
+            return false
+        }
+        return PatternsCompat.WEB_URL.matcher(url).matches()
     }
 
     private fun logException(missingBlockchains: Set<String>) {

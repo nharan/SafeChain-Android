@@ -129,88 +129,45 @@ internal class DefaultWalletAccountsFetcher @Inject constructor(
         body: SaveWalletAccountsResponse,
         eTag: String? = null,
     ): GetWalletAccountsResponse? {
-        return safeApiCall(
-            call = {
-                val resolvedETag = eTag ?: getETagForPush(userWalletId)
-
-                val apiResponse = withContext(dispatchers.io) {
-                    walletAccountsApi.saveAccounts(
-                        walletId = userWalletId.stringValue,
-                        eTag = resolvedETag,
-                        body = body,
-                    )
-                }
-
-                saveETag(userWalletId, apiResponse)
-
-                apiResponse.bind().enrichByAccountId()
-            },
-            onError = { error ->
-                TangemLogger.e(
-                    "pushInternal wallet=$userWalletId: PUT /accounts failed, " +
-                        "isPreconditionFailed=${error.isNetworkError(code = Code.PRECONDITION_FAILED)}, error=$error",
-                )
-
-                if (error.isNetworkError(code = Code.PRECONDITION_FAILED)) {
-                    throw error
-                }
-
-                null
-            },
-        )
+        // Hardened build: keep wallet accounts strictly in local storage; never push to Tangem backend
+        val current = getSaved(userWalletId)
+            ?: defaultWalletAccountsResponseFactory.create(userWalletId = userWalletId, userTokensResponse = null)
+        return current.enrichByAccountId()
     }
 
     private suspend fun getETagForPush(userWalletId: UserWalletId): String {
-        var savedETag = getETag(userWalletId)
-
-        if (savedETag == null) {
-            fetch(userWalletId)
-
-            savedETag = getETag(userWalletId)
-                ?: error("Failed to retrieve ETag after fetching wallet accounts for wallet $userWalletId")
-        }
-
-        return savedETag
+        return getETag(userWalletId) ?: "local-only-etag"
     }
 
     private suspend fun fetchWalletAccounts(
         userWalletId: UserWalletId,
         savedAccountsResponse: GetWalletAccountsResponse?,
     ): FetchResult {
-        return safeApiCall(
-            call = {
-                val apiResponse = withContext(dispatchers.io) {
-                    walletAccountsApi.getAccounts(
-                        walletId = userWalletId.stringValue,
-                        eTag = getETag(userWalletId),
-                    )
-                }
+        // Hardened build: resolve wallet accounts strictly from local storage; never query Tangem backend with walletId
+        if (savedAccountsResponse != null) {
+            val response = savedAccountsResponse.enrichByAccountId().withoutJointAccountsIfDisabled(userWalletId)
+            store(userWalletId = userWalletId, response = response)
+            return FetchResult(response)
+        }
 
-                saveETag(userWalletId, apiResponse)
-
-                val response = apiResponse.bind().enrichByAccountId().withoutJointAccountsIfDisabled(userWalletId)
-
-                store(userWalletId = userWalletId, response = response)
-
-                FetchResult(response)
-            },
-            onError = { throwable ->
-                // pushWalletAccounts and storeWalletAccounts help to avoid cyclic dependency
-                fetchWalletAccountsErrorHandler.handle(
-                    error = throwable,
+        val initialized = fetchWalletAccountsErrorHandler.handle(
+            error = com.tangem.core.remote.response.ApiResponseError.HttpException(
+                code = Code.NOT_FOUND,
+                message = "Local-only mode",
+                errorBody = null,
+            ),
+            userWalletId = userWalletId,
+            savedAccountsResponse = null,
+            pushWalletAccounts = { accounts, eTag ->
+                pushInternal(
                     userWalletId = userWalletId,
-                    savedAccountsResponse = savedAccountsResponse,
-                    pushWalletAccounts = { accounts, eTag ->
-                        pushInternal(
-                            userWalletId = userWalletId,
-                            body = SaveWalletAccountsResponse(accounts),
-                            eTag = eTag,
-                        )
-                    },
-                    storeWalletAccounts = ::store,
+                    body = SaveWalletAccountsResponse(accounts),
+                    eTag = eTag,
                 )
             },
+            storeWalletAccounts = ::store,
         )
+        return initialized.copy(error = null)
     }
 
     /** With the toggle off no joint record reaches the store, so nothing downstream has to tell the two kinds apart */

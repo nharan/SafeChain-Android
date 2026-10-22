@@ -42,9 +42,15 @@ internal class DefaultWalletCardsBackupRepository(
         userWalletId: UserWalletId,
         cards: List<WalletCardBackup>,
         usedSeed: Boolean,
-    ): Either<WalletCardsBackupError, Unit> = Unit.right()
+    ): Either<WalletCardsBackupError, Unit> = withContext(dispatchers.io) {
+        pendingStore.clearAll()
+        Unit.right()
+    }
 
-    override suspend fun sendPendingWalletCards(): Either<WalletCardsBackupError, Unit> = Unit.right()
+    override suspend fun sendPendingWalletCards(): Either<WalletCardsBackupError, Unit> = withContext(dispatchers.io) {
+        pendingStore.clearAll()
+        Unit.right()
+    }
 
     override suspend fun getWalletCards(
         userWalletId: UserWalletId,

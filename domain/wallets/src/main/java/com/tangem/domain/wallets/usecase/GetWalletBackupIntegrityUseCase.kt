@@ -1,6 +1,7 @@
 package com.tangem.domain.wallets.usecase
 
 import com.tangem.domain.card.IsWalletBackupProblematicUseCase
+import com.tangem.domain.models.scan.CardDTO
 import com.tangem.domain.models.wallet.UserWallet
 import com.tangem.domain.wallets.models.backup.CardBackupStatus
 import com.tangem.domain.wallets.models.backup.WalletBackupIntegrity
@@ -25,19 +26,29 @@ class GetWalletBackupIntegrityUseCase(
     suspend operator fun invoke(userWallet: UserWallet): WalletBackupIntegrity {
         if (userWallet !is UserWallet.Cold) return WalletBackupIntegrity.NotApplicable
 
+        val localBackupStatus = userWallet.scanResponse.card.backupStatus
         // the same null check BackupValidator treats as "nothing to validate": firmware without backup support
-        if (userWallet.scanResponse.card.backupStatus == null) return WalletBackupIntegrity.NotApplicable
+        if (localBackupStatus == null) return WalletBackupIntegrity.NotApplicable
 
         if (isWalletBackupProblematicUseCase(userWallet)) return WalletBackupIntegrity.LocallyDetectedProblem
 
         return walletCardsBackupRepository.getWalletCards(userWallet.walletId).fold(
             ifLeft = { WalletBackupIntegrity.Undetermined },
-            ifRight = ::resolve,
+            ifRight = { cards -> resolve(cards = cards, localBackupStatus = localBackupStatus) },
         )
     }
 
-    private fun resolve(cards: List<WalletCardBackup>): WalletBackupIntegrity {
-        if (cards.isEmpty()) return WalletBackupIntegrity.RecommendedRescan
+    private fun resolve(
+        cards: List<WalletCardBackup>,
+        localBackupStatus: CardDTO.BackupStatus,
+    ): WalletBackupIntegrity {
+        if (cards.isEmpty()) {
+            return when (localBackupStatus) {
+                is CardDTO.BackupStatus.Active -> WalletBackupIntegrity.FullyActivated
+                is CardDTO.BackupStatus.CardLinked -> WalletBackupIntegrity.MandatoryRescan
+                CardDTO.BackupStatus.NoBackup -> WalletBackupIntegrity.RecommendedRescan
+            }
+        }
 
         val statuses = cards.map { it.backupStatus }
 

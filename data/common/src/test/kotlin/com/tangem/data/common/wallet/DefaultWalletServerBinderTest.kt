@@ -3,6 +3,7 @@ package com.tangem.data.common.wallet
 import com.google.common.truth.Truth
 import com.tangem.core.remote.response.ApiResponse
 import com.tangem.core.remote.response.ApiResponseError
+import com.tangem.core.remote.response.ETAG_HEADER
 import com.tangem.datasource.api.tangemTech.TangemTechApi
 import com.tangem.datasource.api.tangemTech.models.WalletIdBody
 import com.tangem.datasource.api.tangemTech.models.WalletType
@@ -56,30 +57,28 @@ internal class DefaultWalletServerBinderTest {
     inner class BindUserWalletId {
 
         @Test
-        fun `bind successfully`() = runTest {
-            val requestBody = WalletIdBody(
-                walletId = userWalletId.stringValue,
-                name = "Wallet",
-                walletType = WalletType.COLD,
-                refcode = "refcode",
-                campaign = "campaign",
+        fun `bind resolves locally without calling remote API`() = runTest {
+            val expectedResponse = ApiResponse.Success(
+                data = Unit,
+                code = ApiResponseError.HttpException.Code.CREATED,
+                headers = mapOf(ETAG_HEADER to listOf("local-only-etag")),
             )
-            val apiResponse = ApiResponse.Success(Unit)
 
             val userWalletsFlow = MutableStateFlow(listOf(userWallet))
 
             every { userWalletsListRepository.userWallets } returns userWalletsFlow
-            coEvery { appsFlyerRepository.getConversionData() } returns conversionData
-            coEvery { tangemTechApi.createWallet(requestBody) } returns apiResponse
 
             val actual = binder.bind(userWalletId = userWalletId)
 
-            Truth.assertThat(actual).isEqualTo(apiResponse)
+            Truth.assertThat(actual).isEqualTo(expectedResponse)
 
             coVerifyOrder {
                 userWalletsListRepository.userWallets
+            }
+
+            coVerify(inverse = true) {
                 appsFlyerRepository.getConversionData()
-                tangemTechApi.createWallet(requestBody)
+                tangemTechApi.createWallet(any())
             }
         }
 
@@ -100,60 +99,6 @@ internal class DefaultWalletServerBinderTest {
                 tangemTechApi.createWallet(any())
             }
         }
-
-        @Test
-        fun `bind successfully if appsFlyerConversionStore returns null`() = runTest {
-            val requestBody = WalletIdBody(
-                walletId = userWalletId.stringValue,
-                name = "Wallet",
-                walletType = WalletType.COLD,
-            )
-            val apiResponse = ApiResponse.Success(Unit)
-
-            val userWalletsFlow = MutableStateFlow(listOf(userWallet))
-
-            every { userWalletsListRepository.userWallets } returns userWalletsFlow
-            coEvery { appsFlyerRepository.getConversionData() } returns null
-            coEvery { tangemTechApi.createWallet(requestBody) } returns apiResponse
-
-            val actual = binder.bind(userWalletId = userWalletId)
-
-            Truth.assertThat(actual).isEqualTo(apiResponse)
-
-            coVerifyOrder {
-                userWalletsListRepository.userWallets
-                appsFlyerRepository.getConversionData()
-                tangemTechApi.createWallet(requestBody)
-            }
-        }
-
-        @Test
-        fun `bind returns error if request is failed`() = runTest {
-            val requestBody = WalletIdBody(
-                walletId = userWalletId.stringValue,
-                name = "Wallet",
-                walletType = WalletType.COLD,
-                refcode = "refcode",
-                campaign = "campaign",
-            )
-            val apiResponse = ApiResponse.Error(ApiResponseError.TimeoutException()) as ApiResponse<Unit>
-
-            val userWalletsFlow = MutableStateFlow(listOf(userWallet))
-
-            every { userWalletsListRepository.userWallets } returns userWalletsFlow
-            coEvery { appsFlyerRepository.getConversionData() } returns conversionData
-            coEvery { tangemTechApi.createWallet(requestBody) } returns apiResponse
-
-            val actual = binder.bind(userWalletId = userWalletId)
-
-            Truth.assertThat(actual).isEqualTo(apiResponse)
-
-            coVerifyOrder {
-                userWalletsListRepository.userWallets
-                appsFlyerRepository.getConversionData()
-                tangemTechApi.createWallet(requestBody)
-            }
-        }
     }
 
     @Nested
@@ -161,72 +106,20 @@ internal class DefaultWalletServerBinderTest {
     inner class BindUserWallet {
 
         @Test
-        fun `bind successfully`() = runTest {
-            val requestBody = WalletIdBody(
-                walletId = userWalletId.stringValue,
-                name = "Wallet",
-                walletType = WalletType.COLD,
-                refcode = "refcode",
-                campaign = "campaign",
+        fun `bind resolves locally without calling remote API`() = runTest {
+            val expectedResponse = ApiResponse.Success(
+                data = Unit,
+                code = ApiResponseError.HttpException.Code.CREATED,
+                headers = mapOf(ETAG_HEADER to listOf("local-only-etag")),
             )
-            val apiResponse = ApiResponse.Success(Unit)
-
-            coEvery { appsFlyerRepository.getConversionData() } returns conversionData
-            coEvery { tangemTechApi.createWallet(requestBody) } returns apiResponse
 
             val actual = binder.bind(userWallet = userWallet)
 
-            Truth.assertThat(actual).isEqualTo(apiResponse)
+            Truth.assertThat(actual).isEqualTo(expectedResponse)
 
-            coVerifyOrder {
+            coVerify(inverse = true) {
                 appsFlyerRepository.getConversionData()
-                tangemTechApi.createWallet(requestBody)
-            }
-        }
-
-        @Test
-        fun `bind successfully if appsFlyerConversionStore returns null`() = runTest {
-            val requestBody = WalletIdBody(
-                walletId = userWalletId.stringValue,
-                name = "Wallet",
-                walletType = WalletType.COLD,
-            )
-            val apiResponse = ApiResponse.Success(Unit)
-
-            coEvery { appsFlyerRepository.getConversionData() } returns null
-            coEvery { tangemTechApi.createWallet(requestBody) } returns apiResponse
-
-            val actual = binder.bind(userWallet = userWallet)
-
-            Truth.assertThat(actual).isEqualTo(apiResponse)
-
-            coVerifyOrder {
-                appsFlyerRepository.getConversionData()
-                tangemTechApi.createWallet(requestBody)
-            }
-        }
-
-        @Test
-        fun `bind returns error if request is failed`() = runTest {
-            val requestBody = WalletIdBody(
-                walletId = userWalletId.stringValue,
-                name = "Wallet",
-                walletType = WalletType.COLD,
-                refcode = "refcode",
-                campaign = "campaign",
-            )
-            val apiResponse = ApiResponse.Error(ApiResponseError.TimeoutException()) as ApiResponse<Unit>
-
-            coEvery { appsFlyerRepository.getConversionData() } returns conversionData
-            coEvery { tangemTechApi.createWallet(requestBody) } returns apiResponse
-
-            val actual = binder.bind(userWallet = userWallet)
-
-            Truth.assertThat(actual).isEqualTo(apiResponse)
-
-            coVerifyOrder {
-                appsFlyerRepository.getConversionData()
-                tangemTechApi.createWallet(requestBody)
+                tangemTechApi.createWallet(any())
             }
         }
     }

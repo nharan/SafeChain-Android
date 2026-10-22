@@ -176,82 +176,31 @@ internal class DefaultWalletsRepository(
         }
     }
 
-    override suspend fun setWalletName(walletId: UserWalletId, walletName: String) = withContext(dispatchers.io) {
+    override suspend fun setWalletName(walletId: UserWalletId, walletName: String) {
+        // Hardened build: keep wallet name strictly local; never send walletId/name to Tangem backend
+    }
+
+    override suspend fun upgradeWallet(walletId: UserWalletId) {
+        // Hardened build: keep wallet type strictly local; never send walletId/type to Tangem backend
+        userWalletsListRepository.getSyncStrict(id = walletId)
+    }
+
+    override suspend fun getWalletInfo(walletId: UserWalletId): UserWalletRemoteInfo {
         val userWallet = userWalletsListRepository.getSyncOrNull(id = walletId)
-
-        tangemTechApi.updateWallet(
-            walletId = walletId.stringValue,
-            body = WalletBody(name = walletName, type = WalletType.from(userWallet)),
-        ).getOrThrow()
-    }
-
-    override suspend fun upgradeWallet(walletId: UserWalletId) = withContext(dispatchers.io) {
-        val userWallet = userWalletsListRepository.getSyncStrict(id = walletId)
-
-        tangemTechApi.updateWallet(
-            walletId = walletId.stringValue,
-            body = WalletBody(name = userWallet.name, type = WalletType.from(userWallet)),
-        ).getOrThrow()
-    }
-
-    override suspend fun getWalletInfo(walletId: UserWalletId): UserWalletRemoteInfo = withContext(dispatchers.io) {
-        UserWalletRemoteInfoConverter.convert(
-            value = tangemTechApi.getWalletById(walletId.stringValue).getOrThrow(),
+        return UserWalletRemoteInfo(
+            walletId = walletId,
+            name = userWallet?.name.orEmpty(),
+            isNotificationsEnabled = isNotificationsEnabled(walletId),
         )
     }
 
-    override suspend fun getWalletsInfo(applicationId: String, updateCache: Boolean): List<UserWalletRemoteInfo> =
-        withContext(dispatchers.io) {
-            tangemTechApi.getWallets(applicationId)
-                .getOrThrow()
-                .map { walletInfo ->
-                    val userWallet = UserWalletRemoteInfoConverter.convert(
-                        value = walletInfo,
-                    )
-                    if (updateCache) {
-                        setNotificationsEnabled(
-                            userWalletId = userWallet.walletId,
-                            isEnabled = userWallet.isNotificationsEnabled,
-                        )
-                    }
-                    userWallet
-                }
-        }
+    override suspend fun getWalletsInfo(applicationId: String, updateCache: Boolean): List<UserWalletRemoteInfo> {
+        return emptyList()
+    }
 
-    override suspend fun associateWallets(applicationId: String, wallets: List<UserWallet>) =
-        withContext(dispatchers.io) {
-            val associateApplicationIdWithWallets: suspend () -> ApiResponse<Unit> = {
-                tangemTechApi.associateApplicationIdWithWallets(
-                    applicationId = applicationId,
-                    body = AssociateApplicationIdWithWalletsBody(
-                        walletIds = wallets.map { it.walletId.stringValue }.distinct(),
-                    ),
-                )
-            }
-
-            val apiResponse = associateApplicationIdWithWallets()
-
-            if (apiResponse is ApiResponse.Success) return@withContext
-
-            if (apiResponse is ApiResponse.Error &&
-                apiResponse.cause.isNetworkError(HttpException.Code.BAD_REQUEST)
-            ) {
-                val errorBody = (apiResponse.cause as? HttpException)?.errorBody
-                    ?: error("Bad Request must have error body")
-
-                val adapter = moshi.adapter(AssociateAppWithWalletsErrorResponse::class.java)
-                val errorResponse = adapter.fromJson(errorBody)
-                    ?: error("Cannot parse error body: $errorBody")
-
-                errorResponse.missingWalletIds
-                    .map {
-                        async { createWallet(userWalletId = UserWalletId(it)) }
-                    }
-                    .awaitAll()
-
-                associateApplicationIdWithWallets().getOrThrow()
-            }
-        }
+    override suspend fun associateWallets(applicationId: String, wallets: List<UserWallet>) {
+        // Hardened build: never associate device applicationId with walletIds on Tangem backend
+    }
 
     override suspend fun activatePromoCode(
         userWalletId: UserWalletId,

@@ -207,8 +207,33 @@ internal class BlockchainProvidersResponseMergerTest {
 
         val expectedNear = "near-protocol" to listOf(
             ProviderModel.Public("https://rpc.mainnet.fastnear.com/"),
-            ProviderModel.Public("https://archival-rpc.mainnet.near.org/"),
             ProviderModel.Private(name = "nownodes"),
+            ProviderModel.Public("https://archival-rpc.mainnet.near.org/"),
+        )
+        Truth.assertThat(actual).isEqualTo(remoteResponse + expectedNear)
+    }
+
+    @Test
+    fun test_if_non_https_and_unsupported_local_providers_are_filtered_out() {
+        val localNear = "near-protocol" to listOf(
+            ProviderModel.Public("http://insecure.rpc.example.com/"),
+            ProviderModel.Public("https://rpc.mainnet.fastnear.com"),
+            ProviderModel.Private(name = "nownodes"),
+            ProviderModel.UnsupportedType,
+        )
+        val remoteNear = "near-protocol" to listOf(
+            ProviderModel.Public("http://insecure-remote.rpc.example.com/"),
+            ProviderModel.Public("https://archival-rpc.mainnet.near.org"),
+        )
+
+        val actual = blockchainProvidersResponseMerger.merge(
+            local = localResponse + localNear,
+            remote = remoteResponse + remoteNear,
+        )
+
+        val expectedNear = "near-protocol" to listOf(
+            ProviderModel.Public("https://rpc.mainnet.fastnear.com/"),
+            ProviderModel.Public("https://archival-rpc.mainnet.near.org/"),
         )
         Truth.assertThat(actual).isEqualTo(remoteResponse + expectedNear)
     }

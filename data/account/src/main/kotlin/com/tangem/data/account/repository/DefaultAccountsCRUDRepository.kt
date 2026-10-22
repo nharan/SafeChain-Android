@@ -96,37 +96,10 @@ internal class DefaultAccountsCRUDRepository(
     }
 
     override suspend fun fetchArchivedAccounts(userWalletId: UserWalletId) {
-        val eTag = archivedAccountsETagStore.getSyncOrNull()?.get(key = userWalletId.stringValue)
+        // Hardened build: keep archived accounts strictly local; never query Tangem backend with walletId
         val store = getArchivedAccountsStore(userWalletId = userWalletId)
-
-        val response = safeApiCall(
-            call = {
-                val apiResponse = withContext(dispatchers.io) {
-                    walletAccountsApi.getArchivedAccounts(
-                        walletId = userWalletId.stringValue,
-                        eTag = eTag,
-                    )
-                }
-
-                saveETag(userWalletId, apiResponse)
-
-                apiResponse.bind()
-            },
-            onError = {
-                if (it is HttpException && it.code == HttpException.Code.NOT_MODIFIED) {
-                    null
-                } else {
-                    throw it
-                }
-            },
-        )
-
-        if (response != null) {
-            val converter = ArchivedAccountConverter(userWalletId = userWalletId)
-
-            val archivedAccounts = converter.convertList(input = response.accounts)
-
-            store.store(value = archivedAccounts)
+        if (store.getSyncOrNull() == null) {
+            store.store(value = emptyList())
         }
     }
 
@@ -142,18 +115,10 @@ internal class DefaultAccountsCRUDRepository(
     }
 
     /**
-     * The document is written whole, and a row missing from it archives that account on the backend — so every
-     * account of the list goes into the body, joint ones included. Dropping them here would archive the wallet's
-     * joint accounts on any edit of an ordinary one.
+     * Hardened build: persists accounts strictly to local storage without pushing walletId/accounts to Tangem backend.
      */
     override suspend fun saveAccounts(accountList: AccountList) {
-        val syncedResponse = walletAccountsSaver.push(
-            userWalletId = accountList.userWalletId,
-            body = SaveWalletAccountsResponseConverter.convert(value = accountList),
-        )
-            ?: error("Failed to push accounts for wallet: ${accountList.userWalletId}")
-
-        walletAccountsSaver.store(userWalletId = accountList.userWalletId, response = syncedResponse)
+        saveAccountsLocally(accountList)
     }
 
     override suspend fun saveAccount(account: Account.CryptoPortfolio) {

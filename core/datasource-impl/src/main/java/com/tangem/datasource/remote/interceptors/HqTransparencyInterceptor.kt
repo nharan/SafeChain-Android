@@ -23,11 +23,10 @@ import java.util.concurrent.TimeUnit
  * Real-time, 100% RAM-only outbound network transparency monitor.
  *
  * - Never writes anything to disk.
- * - Intercepts all HTTP requests across Card SDK (`verify.tangem.com`),
- *   App Backend (`api.tangem-tech.com`), and Blockchain RPCs.
- * - Immediately pops up a detailed on-screen Transparency Dialog whenever
- *   card-identifying data (`verify.tangem.com`, `cardId`, `cardPublicKey`) is sent to HQ,
- *   showing the exact URL, query parameters, and request body sent.
+ * - Uses metadata-only inspection by default for blockchain RPCs and large/streaming/one-shot payloads
+ *   so network observation never mutates or interferes with transaction submission.
+ * - Inspects URL host (strict domain matching), path, query parameters, and sensitive request headers
+ *   (`card_id`, `card_public_key`, `Authorization`, `DPoP`) to surface Tangem HQ and card-verification calls.
  */
 object HqTransparencyInterceptor : Interceptor {
 
@@ -37,7 +36,8 @@ object HqTransparencyInterceptor : Interceptor {
         val host: String,
         val path: String,
         val queryParams: List<Pair<String, String>>,
-        val requestBody: String,
+        val inspectedHeaders: List<Pair<String, String>>,
+        val requestBodySummary: String,
         val responseStatus: String,
         val durationMs: Long,
         val isCardAttestationCall: Boolean,
@@ -45,7 +45,23 @@ object HqTransparencyInterceptor : Interceptor {
     )
 
     private const val MAX_ENTRIES = 100
+    private const val MAX_INSPECTED_BODY_BYTES = 4_096L
+    private const val MAX_DISPLAYED_BODY_CHARS = 600
     private const val TOAST_COOLDOWN_MS = 6_000L
+
+    private val SENSITIVE_HEADER_NAMES = setOf(
+        "card_id",
+        "card_public_key",
+        "authorization",
+        "dpop",
+    )
+
+    private val CARD_QUERY_PARAM_NAMES = setOf(
+        "cardid",
+        "cardpublickey",
+        "cid",
+        "walletid",
+    )
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val sessionEntries = CopyOnWriteArrayList<AuditEntry>()
@@ -100,18 +116,25 @@ object HqTransparencyInterceptor : Interceptor {
         val queryParams = (0 until request.url.querySize).map { i ->
             request.url.queryParameterName(i) to (request.url.queryParameterValue(i) ?: "")
         }
-        val bodyText = extractRequestBody(request)
+        val inspectedHeaders = extractSensitiveHeaders(request)
 
-        val isCardCall = host.contains("verify.tangem", ignoreCase = true) ||
-            queryParams.any { (k, _) ->
-                k.equals("cardId", ignoreCase = true) ||
-                    k.equals("cardPublicKey", ignoreCase = true) ||
-                    k.equals("CID", ignoreCase = true)
-            }
-        val isHqCall = isCardCall ||
-            host.contains("tangem.com", ignoreCase = true) ||
-            host.contains("tangem-tech.com", ignoreCase = true) ||
-            host.contains("tangem.org", ignoreCase = true)
+        val isVerifyHost = isDomainMatch(host, "verify.tangem.com")
+        val isHqHost = isVerifyHost ||
+            isDomainMatch(host, "tangem.com") ||
+            isDomainMatch(host, "tangem-tech.com") ||
+            isDomainMatch(host, "tangem.org")
+
+        val hasCardHeader = inspectedHeaders.any { (name, _) ->
+            name.equals("card_id", ignoreCase = true) ||
+                name.equals("card_public_key", ignoreCase = true)
+        }
+        val hasCardQuery = queryParams.any { (k, _) ->
+            k.lowercase(Locale.US) in CARD_QUERY_PARAM_NAMES
+        }
+        val isCardCall = isVerifyHost || hasCardHeader || hasCardQuery
+        val isHqCall = isCardCall || isHqHost
+
+        val bodySummary = summarizeRequestBody(request = request, allowSmallBodyPreview = isHqCall)
 
         return try {
             val response = chain.proceed(request)
@@ -122,7 +145,8 @@ object HqTransparencyInterceptor : Interceptor {
                 host = host,
                 path = path,
                 queryParams = queryParams,
-                requestBody = bodyText,
+                inspectedHeaders = inspectedHeaders,
+                requestBodySummary = bodySummary,
                 responseStatus = "HTTP ${response.code}",
                 durationMs = tookMs,
                 isCardAttestationCall = isCardCall,
@@ -138,7 +162,8 @@ object HqTransparencyInterceptor : Interceptor {
                 host = host,
                 path = path,
                 queryParams = queryParams,
-                requestBody = bodyText,
+                inspectedHeaders = inspectedHeaders,
+                requestBodySummary = bodySummary,
                 responseStatus = "BLOCKED / FAILED (${e.javaClass.simpleName})",
                 durationMs = tookMs,
                 isCardAttestationCall = isCardCall,
@@ -149,8 +174,47 @@ object HqTransparencyInterceptor : Interceptor {
         }
     }
 
-    private fun extractRequestBody(request: Request): String {
+    private fun isDomainMatch(host: String, domain: String): Boolean {
+        return host.equals(domain, ignoreCase = true) ||
+            host.endsWith(".$domain", ignoreCase = true)
+    }
+
+    private fun extractSensitiveHeaders(request: Request): List<Pair<String, String>> {
+        val headers = request.headers
+        val matched = mutableListOf<Pair<String, String>>()
+        for (i in 0 until headers.size) {
+            val name = headers.name(i)
+            if (name.lowercase(Locale.US) in SENSITIVE_HEADER_NAMES) {
+                matched.add(name to headers.value(i))
+            }
+        }
+        return matched
+    }
+
+    /**
+     * Safely summarizes the request body without interfering with transaction broadcasts or streaming requests:
+     * - Never touches one-shot or duplex request bodies.
+     * - Uses metadata-only reporting for non-HQ (blockchain RPC) calls or bodies exceeding [MAX_INSPECTED_BODY_BYTES].
+     */
+    private fun summarizeRequestBody(request: Request, allowSmallBodyPreview: Boolean): String {
         val body = request.body ?: return "EMPTY (0 bytes)"
+        if (body.isOneShot()) return "METADATA ONLY (one-shot body, not buffered)"
+        if (body.isDuplex()) return "METADATA ONLY (duplex body, not buffered)"
+
+        val contentLength = runCatching { body.contentLength() }.getOrDefault(-1L)
+        val contentType = body.contentType()?.toString() ?: "unknown"
+        if (contentLength == 0L) return "EMPTY (0 bytes)"
+
+        if (!allowSmallBodyPreview) {
+            val sizeLabel = if (contentLength >= 0L) "$contentLength bytes" else "unknown length"
+            return "METADATA ONLY ($sizeLabel, type=$contentType; body not buffered for RPC safety)"
+        }
+
+        if (contentLength < 0L || contentLength > MAX_INSPECTED_BODY_BYTES) {
+            val sizeLabel = if (contentLength >= 0L) "$contentLength bytes" else "unknown length"
+            return "METADATA ONLY ($sizeLabel exceeds ${MAX_INSPECTED_BODY_BYTES}B inspection cap, type=$contentType)"
+        }
+
         return runCatching {
             val buffer = Buffer()
             body.writeTo(buffer)
@@ -158,9 +222,13 @@ object HqTransparencyInterceptor : Interceptor {
                 "EMPTY (0 bytes)"
             } else {
                 val raw = buffer.readString(StandardCharsets.UTF_8)
-                if (raw.length > 600) raw.take(600) + "... (${buffer.size} bytes total)" else raw
+                if (raw.length > MAX_DISPLAYED_BODY_CHARS) {
+                    raw.take(MAX_DISPLAYED_BODY_CHARS) + "... (${buffer.size} bytes total)"
+                } else {
+                    raw
+                }
             }
-        }.getOrDefault("<non-readable body>")
+        }.getOrDefault("METADATA ONLY (non-readable body, type=$contentType)")
     }
 
     private fun recordAndNotify(entry: AuditEntry) {
@@ -181,7 +249,7 @@ object HqTransparencyInterceptor : Interceptor {
                     if (!activity.isFinishing && !activity.isDestroyed) {
                         Toast.makeText(
                             activity.applicationContext,
-                            "📡 HQ Public API: ${entry.method} ${entry.host}${entry.path} (0 card/key data)",
+                            "📡 HQ Public API: ${entry.method} ${entry.host}${entry.path}",
                             Toast.LENGTH_SHORT,
                         ).show()
                     }
@@ -238,6 +306,14 @@ object HqTransparencyInterceptor : Interceptor {
                     }
                     append("${idx + 1}. $badge [${e.timestamp}] ${e.responseStatus} (${e.durationMs}ms)\n")
                     append("   ${e.method} https://${e.host}${e.path}\n")
+                    if (e.inspectedHeaders.isNotEmpty()) {
+                        append("   Auth/Card Headers:\n")
+                        e.inspectedHeaders.forEach { (k, v) ->
+                            append("     • $k = $v\n")
+                        }
+                    } else {
+                        append("   Auth/Card Headers: NONE\n")
+                    }
                     if (e.queryParams.isNotEmpty()) {
                         append("   Query Params:\n")
                         e.queryParams.forEach { (k, v) ->
@@ -246,7 +322,7 @@ object HqTransparencyInterceptor : Interceptor {
                     } else {
                         append("   Query Params: NONE\n")
                     }
-                    append("   Request Body: ${e.requestBody}\n\n")
+                    append("   Request Body: ${e.requestBodySummary}\n\n")
                 }
             }
         }
@@ -284,6 +360,14 @@ object HqTransparencyInterceptor : Interceptor {
             append("• Endpoint: ${e.method} https://${e.host}${e.path}\n")
             append("• Result: ${e.responseStatus} (${e.durationMs}ms)\n")
             append("• Purpose: $purpose\n")
+            append("• Auth / Card Headers Sent:\n")
+            if (e.inspectedHeaders.isEmpty()) {
+                append("    (none)\n")
+            } else {
+                e.inspectedHeaders.forEach { (k, v) ->
+                    append("    - $k: $v\n")
+                }
+            }
             append("• Query Parameters Sent:\n")
             if (e.queryParams.isEmpty()) {
                 append("    (none)\n")
@@ -292,13 +376,12 @@ object HqTransparencyInterceptor : Interceptor {
                     append("    - $k: $v\n")
                 }
             }
-            append("• HTTP Request Body: ${e.requestBody}\n\n")
+            append("• HTTP Request Body: ${e.requestBodySummary}\n\n")
         }
 
-        append("✅ SECURITY VERIFICATION:\n")
-        append("• Private Keys / Seed Phrase / Passphrase sent: NONE (0 bytes)\n")
-        append("• Encrypted Backup Payload sent: NONE (0 bytes)\n")
-        append("• Wallet Blockchain Public Keys sent: NONE (0 bytes)\n")
-        append("• Disk Logging: DISABLED (RAM-only audit)")
+        append("ℹ️ TRANSPARENCY MONITOR NOTES:\n")
+        append("• Scope: Retrospective RAM-only HTTP metadata & bounded body viewer (<= ${MAX_INSPECTED_BODY_BYTES}B)\n")
+        append("• Inspected Headers: card_id, card_public_key, Authorization, DPoP\n")
+        append("• Disk Logging: DISABLED (RAM-only session buffer)")
     }
 }

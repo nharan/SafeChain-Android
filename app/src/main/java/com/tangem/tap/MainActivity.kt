@@ -414,9 +414,6 @@ class MainActivity : AppCompatActivity(), ActivityResultCallbackHolder {
         super.onNewIntent(intent)
         TangemLogger.i("onNewIntent: data=${intent.data}, extras=${intent.extras?.keySet()}")
 
-        // Warm start: let the AppsFlyer SDK resolve a OneLink delivered while the app is already running.
-        AppsFlyerLib.getInstance().performOnDeepLinking(intent, this)
-
         val isFromPush = intent.extras?.containsKey(OPENED_FROM_GCM_PUSH) == true
         if (isFromPush) {
             analyticsEventsHandler.send(Push.PushNotificationOpened())

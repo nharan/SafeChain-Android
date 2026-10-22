@@ -27,6 +27,10 @@ internal class PendingWalletCardsBackupStore(
         dataStore.updateData { pending -> pending.filterNot { it.id == id } }
     }
 
+    suspend fun clearAll() {
+        dataStore.updateData { emptyList() }
+    }
+
     private companion object {
 
         /**

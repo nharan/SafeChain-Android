@@ -45,11 +45,7 @@ class UserTokensSaver(
             return@withContext
         }
 
-        val enrichedResponse = response
-            .withoutDuplicates()
-            .enrichIf(userWalletId = userWalletId, condition = useEnricher)
-
-        push(userWallet = userWallet, response = enrichedResponse, onFailSend = onFailSend)
+        // Hardened build: never enrich with addresses or push user token lists to Tangem backend
     }
 
     suspend fun pushWithRetryer(
@@ -70,32 +66,7 @@ class UserTokensSaver(
     }
 
     private suspend fun push(userWallet: UserWallet, response: UserTokensResponse, onFailSend: () -> Unit) {
-        safeApiCall(
-            call = {
-                // Both codes are expected flow, not failures, so they are handled before bind() gets to log them
-                var apiResponse = saveTokensWithETag(userWalletId = userWallet.walletId, response = response)
-
-                if (apiResponse.isError(code = ApiResponseError.HttpException.Code.NOT_FOUND)) {
-                    walletServerBinder.bind(userWallet).bind()
-
-                    apiResponse = saveTokensWithETag(userWalletId = userWallet.walletId, response = response)
-                }
-
-                // The gate is belt and braces: without the toggle no If-Match is sent, so a 412 cannot arrive
-                val isRecoverableStaleWrite = jointAccountFeatureToggles.isJointAccountEnabled &&
-                    apiResponse.isError(code = ApiResponseError.HttpException.Code.PRECONDITION_FAILED)
-
-                if (isRecoverableStaleWrite) {
-                    mergeAndRetry(userWalletId = userWallet.walletId, response = response, onFailSend = onFailSend)
-                } else {
-                    apiResponse.bind()
-                }
-            },
-            onError = { error ->
-                TangemLogger.e("Failed to push ${response.tokens.size} user tokens", error)
-                onFailSend()
-            },
-        )
+        // Hardened build: never push user token lists, derivation paths, or addresses to Tangem backend
     }
 
     private fun ApiResponse<*>.isError(code: ApiResponseError.HttpException.Code): Boolean {
