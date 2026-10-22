@@ -1,3 +1,9 @@
+# **Tangem Android — Hardened Privacy & Security Edition**
+
+> **See [SECURITY_HARDENING.md](./SECURITY_HARDENING.md) for a complete breakdown of all privacy, air-gap, zero-disk-write, and network transparency modifications compared to upstream Tangem.**
+
+---
+
 # **How to build application**
 
 # Project Build Documentation
