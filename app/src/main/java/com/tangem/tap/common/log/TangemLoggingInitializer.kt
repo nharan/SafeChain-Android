@@ -9,7 +9,7 @@ import com.tangem.blockchain.network.BlockchainSdkRetrofitBuilder
 import com.tangem.datasource.local.config.environment.EnvironmentConfig
 import com.tangem.datasource.local.logs.AppLogsStore
 import com.tangem.datasource.local.logs.SensitiveUrlMasker
-import com.tangem.datasource.remote.interceptors.NetworkLogsSaveInterceptor
+import com.tangem.datasource.remote.interceptors.HqTransparencyInterceptor
 import com.tangem.datasource.remote.interceptors.WireMockRedirectInterceptor
 import com.tangem.datasource.remote.interceptors.createNetworkLoggingInterceptor
 import com.tangem.operations.attestation.api.TangemApiServiceSettings
@@ -21,17 +21,8 @@ import okhttp3.Interceptor
 
 /**
  * Owns all app-startup wiring of the logging subsystem in a single place:
- *  - [initAppLogging] — registers [TangemLogger] writers (Logcat + file).
- *  - [initSdkLogging] — registers the Card SDK logger with [Log] and installs OkHttp
- *    interceptors for the Blockchain SDK and the Tangem API.
- *
- * @property appLogsStore     app logs store used by file-based writer and the network logs save
- *                            interceptor
- * @property tangemSdkLogger  Card SDK logger registered with [Log.addLogger]
- * @property environmentConfig source of [BlockchainSdkConfig] used to build the blockchain
- *                            URL masker
- *
-[REDACTED_AUTHOR]
+ *  - [initAppLogging] — registers [TangemLogger] writers (Logcat only; zero disk logging).
+ *  - [initSdkLogging] — installs RAM-only [HqTransparencyInterceptor] for the Blockchain SDK and Tangem Card SDK API.
  */
 class TangemLoggingInitializer(
     private val appLogsStore: AppLogsStore,
@@ -40,42 +31,25 @@ class TangemLoggingInitializer(
 ) {
 
     fun initAppLogging() {
+        // Hardened build: never register FileLogWriter (0 bytes written to disk)
         TangemLogger.setLogWriters(
             buildList {
                 if (BuildConfig.LOG_ENABLED) {
                     add(LogcatLogWriter())
                 }
-                add(FileLogWriter(appLogsStore))
             },
         )
     }
 
-    /**
-     * Configure logging for the underlying SDKs:
-     *  - register [tangemSdkLogger] with the Card SDK static [Log] facade,
-     *  - install OkHttp interceptors for the Blockchain SDK and Tangem API.
-     *
-     * Must be called from `TangemApplication.init()` AFTER `entryPoint.getWalletsRepository()`
-     * has triggered Hilt singletons construction — in particular `DefaultCardSdkProvider`,
-     * whose init block registers `AddHeadersInterceptor` in [TangemApiServiceSettings].
-     * Calling this method earlier would invert the OkHttp interceptor chain order and
-     * cause logging interceptors to see requests *without* auth headers.
-     */
     fun initSdkLogging(application: Application) {
-        Log.addLogger(logger = tangemSdkLogger)
+        HqTransparencyInterceptor.registerApplication(application)
 
         BlockchainSdkRetrofitBuilder.interceptors = buildList {
             if (BuildConfig.MOCK_DATA_SOURCE) {
                 add(WireMockRedirectInterceptor())
             }
+            add(HqTransparencyInterceptor)
             addAll(createConsoleInterceptors(application))
-            add(
-                NetworkLogsSaveInterceptor(
-                    appLogsStore = appLogsStore,
-                    sensitiveUrlMasker = createBlockchainSensitiveUrlMasker(),
-                    shouldCheckResponseBodySize = true,
-                ),
-            )
         }
 
         TangemApiServiceSettings.addInterceptors(
@@ -83,8 +57,8 @@ class TangemLoggingInitializer(
                 if (BuildConfig.MOCK_DATA_SOURCE) {
                     add(WireMockRedirectInterceptor())
                 }
+                add(HqTransparencyInterceptor)
                 addAll(createConsoleInterceptors(application))
-                add(NetworkLogsSaveInterceptor(appLogsStore))
             }.toTypedArray(),
         )
     }

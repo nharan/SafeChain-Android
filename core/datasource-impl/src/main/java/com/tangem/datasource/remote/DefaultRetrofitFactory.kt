@@ -22,6 +22,7 @@ import com.tangem.core.remote.moshi.NetworkMoshi
 import com.tangem.datasource.local.config.environment.EnvironmentConfig
 import com.tangem.datasource.local.logs.AppLogsStore
 import com.tangem.datasource.local.logs.SensitiveUrlMasker
+import com.tangem.datasource.remote.interceptors.HqTransparencyInterceptor
 import com.tangem.datasource.remote.interceptors.NetworkLogsSaveInterceptor
 import com.tangem.datasource.remote.interceptors.SwitchEnvironmentInterceptor
 import com.tangem.datasource.remote.interceptors.WireMockRedirectInterceptor
@@ -116,9 +117,7 @@ internal class DefaultRetrofitFactory @Inject constructor(
                         if (applyTimeoutAnnotations) it.applyTimeoutAnnotations() else it
                     }
                     .applyTimeouts(timeouts = timeouts)
-                    .let {
-                        if (logsSaving) it.applyLogsSaving() else it
-                    }
+                    .addInterceptor(HqTransparencyInterceptor)
                     .let {
                         if (loggable) it.addLoggers(apiConfigId = apiConfigId, context = context) else it
                     }

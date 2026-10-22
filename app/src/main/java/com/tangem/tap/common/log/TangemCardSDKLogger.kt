@@ -19,12 +19,7 @@ internal class TangemCardSDKLogger(
     private val messageFormatter: LogFormat = LogFormat.StairsFormatter()
 
     override fun log(message: () -> String, level: Log.Level) {
-        if (!LEVELS.contains(level)) return
-
-        appLogsStore.saveLogMessage(
-            tag = "CardSDK_${level.name}",
-            message = messageFormatter.format(message = message, level = level),
-        )
+        // Hardened build: never evaluate or log NFC APDU / TLV commands
     }
 
     private companion object {

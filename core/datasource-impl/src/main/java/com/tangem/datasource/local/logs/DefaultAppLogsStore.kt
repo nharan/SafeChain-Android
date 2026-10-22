@@ -56,50 +56,36 @@ internal class DefaultAppLogsStore @Inject constructor(
         .appendMillisOfSecond(3)
         .toFormatter()
 
-    /** Get log file */
-    override fun getFile(): File? = if (logFile.exists()) logFile else null
-
-    override suspend fun getZipFile(): File? {
-        return zipMutex.withLock {
-            if (logFile.exists()) {
-                zip(filesToCompress = listOf(logFile), outputZipFile = logFileZip)
-            } else {
-                null
-            }
+    init {
+        // Hardened build: purge any existing log files on disk immediately
+        runCatching {
+            if (logFile.exists()) logFile.delete()
+            if (logFileZip.exists()) logFileZip.delete()
         }
     }
 
+    /** Get log file */
+    override fun getFile(): File? = null
+
+    override suspend fun getZipFile(): File? = null
+
     /**
-     * Save log [message]. Pass [shouldSanitize] = false to bypass [LogsSanitizer].
-     * Sanitization is also bypassed entirely when [BuildConfig.LOG_ENABLED] is true,
-     * so builds with logging enabled can expose raw values for testing.
-     * The optional [throwable]'s stack trace is appended verbatim (never sanitized),
-     * since stack traces routinely contain hex-like sequences that the sanitizer would
-     * otherwise destroy.
+     * Hardened build: never write any application or NFC APDU logs to disk.
      */
     override fun saveLogMessage(tag: String, message: String, throwable: Throwable?, shouldSanitize: Boolean) {
-        launchWithLock {
-            createFileIfNotExist()
-
-            writeMessage(tag = tag, shouldSanitize = shouldSanitize, throwable = throwable, message)
-        }
+        // Disabled: zero disk logging
     }
 
     /** Save log that consists from [messages] */
     override fun saveLogMessage(tag: String, vararg messages: String) {
-        launchWithLock {
-            createFileIfNotExist()
-
-            writeMessage(tag = tag, shouldSanitize = true, throwable = null, messages = messages)
-        }
+        // Disabled: zero disk logging
     }
 
     /** Delete deprecated logs if file size exceeds [maxSize] */
     override fun deleteDeprecatedLogs(maxSize: Int) {
-        launchWithLock {
-            if (logFile.exists() && logFile.length() > maxSize) {
-                logFile.delete()
-            }
+        runCatching {
+            if (logFile.exists()) logFile.delete()
+            if (logFileZip.exists()) logFileZip.delete()
         }
     }
 
