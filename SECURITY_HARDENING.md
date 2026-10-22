@@ -69,10 +69,14 @@ Instead of asking users to trust that only `cardId` and `cardPublicKey` are sent
 
 ---
 
-## 6. Reproducible Open-Source Build Without Proprietary Secrets
+## 6. Reproducible Open-Source Build & Public RPC Reliability Without Proprietary Secrets
 
 ### What Changed
 - **Sanitized Public Config Assets & Build Fallbacks**: Added sanitized default configuration files (`config_prod.json`, `config_dev.json`, `providers_order.json`, dummy `google-services.json`) and null-safe config fallbacks across `TangemGatewayApiConfig.kt`, `Express.kt`, `Collectibles.kt`, `YieldSupply.kt`, and `TangemPay.kt`.
+- **Stripped `"PLACEHOLDER"` Private RPC Credentials (`GeneratedEnvironmentConfigConverter.kt`)**: Added `.noPlaceholder()` / `.noPlaceholderOrNull()` in `core/datasource-impl/src/main/java/com/tangem/datasource/local/config/environment/converter/GeneratedEnvironmentConfigConverter.kt` when constructing `BlockchainSdkConfig` and `GetBlockCredentials`, while preserving Blockchair's keyless free tier (`apiKey = listOf("")`, `authToken = null`).
+- **Added Fast Public RPC Pool & Local-First Provider Merging (`providers_order.json` & `BlockchainProvidersResponseMerger.kt`)**:
+  - Added fast, non-throttled public NEAR Protocol JSON-RPC endpoints (`https://rpc.mainnet.fastnear.com/`, `https://free.rpc.fastnear.com/`, `https://near.drpc.org/`, `https://rpc.mainnet.near.org/`) and TON public JSON-RPC (`https://toncenter.com/api/v2/`) to `app/src/main/assets/tangem-app-config/providers_order.json`.
+  - Updated `libs/blockchain-sdk/src/main/java/com/tangem/blockchainsdk/providers/BlockchainProvidersResponseMerger.kt` so that merging remote provider order from `api.tangem-tech.com/v1/config/providers` preserves local public fallback endpoints (`(localProviders + providers).distinct()`) instead of overwriting them.
 
 ### Why
-Upstream Tangem stores `tangem-app-config` in a private Git submodule that community developers cannot access, causing open-source builds to fail or crash at startup when third-party API keys (AppsFlyer, Amplitude, Express, StakeKit, etc.) are blank. Adding safe empty fallbacks allows anyone in the crypto community to clone the repository and build a working APK out of the box.
+Upstream Tangem stores `tangem-app-config` in a private Git submodule containing proprietary API keys (NowNodes, GetBlock, QuickNode, etc.). In an open-source build where those keys are `"PLACEHOLDER"`, `blockchain-sdk` treats `"PLACEHOLDER"` as a non-empty string (`StringUtilsKt.notnullOrEmpty("PLACEHOLDER") == true`) and instantiates broken private RPC providers (such as `https://go.getblock.io/PLACEHOLDER` and `https://near.nownodes.io` with `api-key: PLACEHOLDER`). Furthermore, `api.tangem-tech.com/v1/config/providers` overrides local `providers_order.json` on startup, leaving NEAR Protocol with two dead private endpoints and one heavily throttled archival endpoint (`archival-rpc.mainnet.near.org`, ~3 seconds per call, or ~9+ seconds for the 3-call `getFee` sequence), causing intermittent `"Network fee info unreachable"` errors. Mapping `"PLACEHOLDER"` to `""`/`null` skips unconfigured private providers immediately, and preserving local public RPCs ensures fast, reliable fee estimation and transaction broadcasting without proprietary API keys.

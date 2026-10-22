@@ -1050,6 +1050,22 @@
     "near-protocol": [
         {
             "type": "public",
+            "url": "https://rpc.mainnet.fastnear.com/"
+        },
+        {
+            "type": "public",
+            "url": "https://free.rpc.fastnear.com/"
+        },
+        {
+            "type": "public",
+            "url": "https://near.drpc.org/"
+        },
+        {
+            "type": "public",
+            "url": "https://rpc.mainnet.near.org/"
+        },
+        {
+            "type": "public",
             "url": "https://archival-rpc.mainnet.near.org/"
         },
         {
@@ -1496,6 +1512,10 @@
         }
     ],
     "the-open-network": [
+        {
+            "type": "public",
+            "url": "https://toncenter.com/api/v2/"
+        },
         {
             "type": "private",
             "name": "ton"

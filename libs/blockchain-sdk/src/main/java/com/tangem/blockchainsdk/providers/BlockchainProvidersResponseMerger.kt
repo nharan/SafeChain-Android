@@ -37,7 +37,10 @@ internal class BlockchainProvidersResponseMerger @Inject internal constructor(
             }
             .filterValues { it.isNotEmpty() }
 
-        val result = local + remoteWithoutInvalidProviders
+        val result = (local + remoteWithoutInvalidProviders).mapValues { (key, providers) ->
+            val localProviders = local[key].orEmpty()
+            (localProviders + providers).distinct()
+        }
 
         if (result != remote) {
             val missingBlockchains = result.keys - remote.keys
@@ -97,7 +100,7 @@ internal class BlockchainProvidersResponseMerger @Inject internal constructor(
      */
     private fun BlockchainProvidersResponse.guaranteeUrlsEndWithSlash(): BlockchainProvidersResponse {
         return mapValues {
-            it.value.map { provider -> provider.addSlashIfAbsent() }
+            it.value.map { provider -> provider.addSlashIfAbsent() }.distinct()
         }
     }
 

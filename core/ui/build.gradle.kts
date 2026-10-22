@@ -126,16 +126,18 @@ android {
     }
 }
 
-val verifyDesignTokens = tasks.register<VerifyDesignTokensTask>("verifyDesignTokens") {
-    tokensDir.set(file("ds-tokens/tokens"))
-    iconsDir.set(file("ds-tokens/icons"))
-    assetsDir.set(file("ds-tokens/assets"))
-    hashFile.set(file("src/main/java/com/tangem/core/ui/res/generated/.tokens-hash"))
-    stampFile.set(layout.buildDirectory.file("tokens-verified.stamp"))
-}
+if (file("ds-tokens/tokens").exists()) {
+    val verifyDesignTokens = tasks.register<VerifyDesignTokensTask>("verifyDesignTokens") {
+        tokensDir.set(file("ds-tokens/tokens"))
+        iconsDir.set(file("ds-tokens/icons"))
+        assetsDir.set(file("ds-tokens/assets"))
+        hashFile.set(file("src/main/java/com/tangem/core/ui/res/generated/.tokens-hash"))
+        stampFile.set(layout.buildDirectory.file("tokens-verified.stamp"))
+    }
 
-tasks.named("preBuild") {
-    dependsOn(verifyDesignTokens)
+    tasks.named("preBuild") {
+        dependsOn(verifyDesignTokens)
+    }
 }
 
 dependencies {

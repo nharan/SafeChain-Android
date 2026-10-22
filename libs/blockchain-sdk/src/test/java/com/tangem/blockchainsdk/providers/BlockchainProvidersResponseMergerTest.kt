@@ -189,6 +189,30 @@ internal class BlockchainProvidersResponseMergerTest {
         Truth.assertThat(actual).isEqualTo(expected)
     }
 
+    @Test
+    fun test_if_local_public_fallback_providers_are_preserved_when_remote_overrides_blockchain() {
+        val localNear = "near-protocol" to listOf(
+            ProviderModel.Public("https://rpc.mainnet.fastnear.com/"),
+            ProviderModel.Public("https://archival-rpc.mainnet.near.org/"),
+        )
+        val remoteNear = "near-protocol" to listOf(
+            ProviderModel.Private(name = "nownodes"),
+            ProviderModel.Public("https://archival-rpc.mainnet.near.org"),
+        )
+
+        val actual = blockchainProvidersResponseMerger.merge(
+            local = localResponse + localNear,
+            remote = remoteResponse + remoteNear,
+        )
+
+        val expectedNear = "near-protocol" to listOf(
+            ProviderModel.Public("https://rpc.mainnet.fastnear.com/"),
+            ProviderModel.Public("https://archival-rpc.mainnet.near.org/"),
+            ProviderModel.Private(name = "nownodes"),
+        )
+        Truth.assertThat(actual).isEqualTo(remoteResponse + expectedNear)
+    }
+
     companion object {
 
         val localResponse: BlockchainProvidersResponse = mapOf(
