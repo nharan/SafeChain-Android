@@ -132,7 +132,36 @@ internal class DefaultWalletAccountsFetcher @Inject constructor(
         // Hardened build: keep wallet accounts strictly in local storage; never push to Tangem backend
         val current = getSaved(userWalletId)
             ?: defaultWalletAccountsResponseFactory.create(userWalletId = userWalletId, userTokensResponse = null)
-        return current.enrichByAccountId()
+        val existingById = current.accounts.associateBy { it.id }
+        val updatedAccounts = body.accounts.map { accountDto ->
+            val existing = existingById[accountDto.id]
+            val tokens = existing?.tokens.orEmpty().map { it.copy(accountId = accountDto.id) }
+            WalletAccountDTO(
+                id = accountDto.id,
+                name = accountDto.name,
+                derivationIndex = accountDto.derivationIndex,
+                icon = accountDto.icon,
+                iconColor = accountDto.iconColor,
+                tokens = tokens,
+                totalTokens = existing?.totalTokens ?: tokens.size,
+                totalNetworks = existing?.totalNetworks ?: tokens.map { it.networkId }.distinct().size,
+                type = accountDto.type ?: existing?.type,
+            )
+        }
+        val activeIds = updatedAccounts.map { it.id }.toSet()
+        val archivedDelta = current.accounts.count { it.id !in activeIds }
+        val addedCount = updatedAccounts.count { it.id !in existingById }
+        val updatedResponse = current.copy(
+            wallet = current.wallet.copy(
+                totalAccounts = maxOf(current.wallet.totalAccounts + addedCount, updatedAccounts.size),
+                totalArchivedAccounts = maxOf(0, current.wallet.totalArchivedAccounts + archivedDelta),
+                totalJointAccounts = updatedAccounts.count(WalletAccountDTO::isJoint),
+            ),
+            accounts = updatedAccounts,
+        ).enrichByAccountId()
+
+        store(userWalletId = userWalletId, response = updatedResponse)
+        return updatedResponse
     }
 
     private suspend fun getETagForPush(userWalletId: UserWalletId): String {
@@ -167,7 +196,11 @@ internal class DefaultWalletAccountsFetcher @Inject constructor(
             },
             storeWalletAccounts = ::store,
         )
-        return initialized.copy(error = null)
+        val sanitizedResponse = initialized.accountsResponse
+            .enrichByAccountId()
+            .withoutJointAccountsIfDisabled(userWalletId)
+        store(userWalletId = userWalletId, response = sanitizedResponse)
+        return FetchResult(accountsResponse = sanitizedResponse, error = null)
     }
 
     /** With the toggle off no joint record reaches the store, so nothing downstream has to tell the two kinds apart */

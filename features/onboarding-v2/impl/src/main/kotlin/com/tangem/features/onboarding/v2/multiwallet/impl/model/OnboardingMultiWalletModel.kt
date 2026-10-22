@@ -79,6 +79,7 @@ internal class OnboardingMultiWalletModel @Inject constructor(
                 onConfirm = {
                     modelScope.launch {
                         onboardingRepository.clearUnfinishedFinalizeOnboarding()
+                        backupServiceHolder.clearActiveSession()
                         if (params.mode is OnboardingMultiWalletComponent.Mode.AddressSync) {
                             if (params.mode.isWalletStarted) {
                                 router.popTo(AppRoute.Wallet)

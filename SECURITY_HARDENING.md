@@ -22,24 +22,26 @@ Upstream Tangem initializes multiple behavioral tracking, attribution, push-noti
 
 ---
 
-## 2. Eliminating All Wallet Registration, Account Sync & Multi-Card Topology Calls to Tangem HQ
+## 2. Eliminating Wallet Registration, Account Sync & Multi-Card Topology Calls to Tangem HQ
 
 ### What Changed
-- **Blocked Multi-Card Cluster Reporting (`POST /v1/wallets/cards`) & Cleared Retry Queues**:
-  - Replaced network calls in `data/wallets/src/main/java/com/tangem/data/wallets/DefaultWalletCardsBackupRepository.kt` and `features/onboarding-v2/impl/src/main/kotlin/com/tangem/features/onboarding/v2/multiwallet/impl/common/WalletCardsBackupReporter.kt` with local no-ops, and actively purged any queued entries in `PendingWalletCardsBackupStore`.
-  - Updated `domain/wallets/src/main/java/com/tangem/domain/wallets/usecase/GetWalletBackupIntegrityUseCase.kt` to evaluate backup status directly from the local `CardDTO.BackupStatus` (`Active` $\rightarrow$ `FullyActivated`, `CardLinked` $\rightarrow$ `MandatoryRescan`, `NoBackup` $\rightarrow$ `RecommendedRescan`) when no remote card records exist.
+- **Replaced Remote Multi-Card Cluster Reporting (`POST /v1/wallets/cards`) with Local Backup Verification Records**:
+  - Updated `data/wallets/src/main/java/com/tangem/data/wallets/DefaultWalletCardsBackupRepository.kt`, `data/wallets/src/main/java/com/tangem/data/wallets/store/PendingWalletCardsBackupStore.kt`, and `features/onboarding-v2/impl/src/main/kotlin/com/tangem/features/onboarding/v2/multiwallet/impl/common/WalletCardsBackupReporter.kt` so that each finalized card in a backup set is recorded strictly locally in `PendingWalletCardsBackupStore` (with `usedSeed = false`) without ever calling `tangemTechApi.postWalletCards()` or `tangemTechApi.getWalletCards()`.
+  - Updated `domain/wallets/src/main/java/com/tangem/domain/wallets/usecase/GetWalletBackupIntegrityUseCase.kt` to require verified per-card records (`cards.size >= 1 + localBackupStatus.cardCount`, all in `ACTIVE` status) before returning `WalletBackupIntegrity.FullyActivated`. When verified per-card records are missing (`cards.isEmpty()`), it returns `RecommendedRescan` (for `Active` / `NoBackup`) or `MandatoryRescan` (for `CardLinked`) rather than reporting full activation from unverified status metadata.
 - **Blocked All Legacy & V1 Wallet Registration (`DefaultWalletServerBinder.kt`, `DefaultWalletsRepository.kt`, `SyncWalletWithRemoteUseCase.kt`)**:
   - Turned `DefaultWalletServerBinder.bind()` into a purely local success response without calling `appsFlyerRepository.getConversionData()` or `tangemTechApi.createWallet()`.
-  - Made `DefaultWalletsRepository.setWalletName()`, `upgradeWallet()`, `getWalletInfo()`, `getWalletsInfo()`, `associateWallets()`, and `SyncWalletWithRemoteUseCase` strictly local so `walletId` is never registered or synced to `api.tangem-tech.com`.
-- **Blocked Remote Account & Token List Syncing (`DefaultWalletAccountsFetcher.kt`, `DefaultAccountsCRUDRepository.kt`, `UserTokensSaver.kt`)**:
-  - Replaced remote `walletAccountsApi` calls in `DefaultWalletAccountsFetcher` and `DefaultAccountsCRUDRepository` with 100% local `AccountsResponseStore` / `DefaultWalletAccountsResponseFactory` operations.
+  - Made `DefaultWalletsRepository.setWalletName()`, `upgradeWallet()`, `getWalletInfo()`, `getWalletsInfo()`, `associateWallets()`, `activatePromoCode()`, and `SyncWalletWithRemoteUseCase` strictly local so `walletId` and `bitcoinAddress` are never registered or synced to `api.tangem-tech.com`.
+- **Replaced Remote Account & Token List Syncing with Local Persistence (`DefaultWalletAccountsFetcher.kt`, `DefaultAccountsCRUDRepository.kt`, `UserTokensSaver.kt`)**:
+  - Replaced remote `walletAccountsApi` calls in `DefaultWalletAccountsFetcher` and `DefaultAccountsCRUDRepository` with local `AccountsResponseStore`, `ArchivedAccountsStore`, and `DefaultWalletAccountsResponseFactory` operations.
+  - Updated `DefaultWalletAccountsFetcher.pushInternal()` and `DefaultAccountsCRUDRepository.saveAccounts()` to apply account creation, renaming, reordering, and archiving/unarchiving deltas directly to local `AccountsResponseStore` and `ArchivedAccountsStore`.
   - Made `UserTokensSaver.push()` a local no-op so enabled token lists and derived public addresses are never pushed via `tangemTechApi.saveTokens()`.
+  - *Trade-Off & Recovery Boundary*: Because wallet accounts and enabled token lists are never uploaded to Tangem's cloud servers, clearing app storage or switching to a new phone will reset custom account names, custom ordering, and enabled token selections to defaults until tokens/accounts are re-added locally. On-chain balances and keys on the physical cards are unaffected, as all keys and derivations remain deterministic on the card.
 - **Blocked Auth Challenge Registration (`POST /v1/wallets/register`)**: Disabled `app/src/main/java/com/tangem/tap/network/auth/WalletRegistrationLauncher.kt` and set `isTangemIdentityEnabled = false` in `libs/auth/src/main/java/com/tangem/lib/auth/DefaultAuthFeatureToggles.kt`.
 - **Stripped Card Identity Headers from General API & RPC Calls**: Modified `app/src/main/java/com/tangem/tap/domain/sdk/impl/DefaultTangemSdkManager.kt` and `app/src/main/java/com/tangem/tap/domain/TangemSigner.kt` so the app does not attach `cardId` and `cardPublicKey` HTTP headers to general API requests via `TangemSdkManager` or `TangemSigner`.
-  - *Architectural Boundary*: Note that precompiled `tangem-sdk` hardware attestation (`OnlineCardVerifier` contacting `verify.tangem.com/card/verify-and-get-info` during card verification/linking) and firmware/artwork checks still use `cardId` and `cardPublicKey` as required by the card's factory certificate validation protocol. All such requests are surfaced in real time by `HqTransparencyInterceptor`.
+  - *Architectural Boundary*: Precompiled `tangem-sdk` hardware attestation (`OnlineCardVerifier` contacting `verify.tangem.com/card/verify-and-get-info` during card verification/linking), firmware/artwork checks, and specialized flows such as Visa/TangemPay activation still use `cardId` and `cardPublicKey` where required by the card protocol. All outbound requests are monitored by `HqTransparencyInterceptor`.
 
 ### Why
-In upstream Tangem, activating or backing up a wallet registers `walletId` (derived from the master public key), syncs wallet accounts and enabled token lists to `api.tangem-tech.com`, and sends `POST /v1/wallets/cards` containing the `cardId` of all three physical cards/rings in a backup set. Eliminating all of these ensures Tangem HQ never learns your `walletId`, never receives your enabled token list, and never learns which physical cards belong to the same backup cluster.
+In upstream Tangem, activating or backing up a wallet registers `walletId` (derived from the master public key), syncs wallet accounts and enabled token lists to `api.tangem-tech.com`, and sends `POST /v1/wallets/cards` containing the `cardId` of all three physical cards/rings in a backup set. Keeping these records local prevents Tangem's backend from learning your `walletId`, enabled token list, or multi-card backup cluster topology.
 
 ---
 
@@ -53,23 +55,25 @@ In upstream Tangem, activating or backing up a wallet registers `walletId` (deri
   - **Step 2 (Access Code + Key Transfer / Finalize)**: The moment all 3 cards/rings are linked and their ECDH session keys are established in RAM, the app prompts the user to turn **Airplane Mode ON** before entering the Access Code or tapping the Primary Ring (`FinalizePrimaryCardTask`) and Backup Cards (`FinalizeBackupCardTask`).
 
 ### Why
-When generating or importing a seed phrase (`BIP39` mnemonic + passphrase), the plaintext mnemonic and derived keys exist in phone RAM while being written to the Primary Ring/Card over NFC. During finalization, the ECDH-encrypted key bundle (`EncryptedBackupData`) passes through phone RAM as a relay between the Primary Ring and Backup Cards. Enforcing Airplane Mode before any mnemonic generation, mnemonic import, or backup finalization guarantees that all radio interfaces are physically powered down whenever key material is handled.
+When generating or importing a seed phrase (`BIP39` mnemonic + passphrase), the plaintext mnemonic and derived keys exist in phone RAM while being written to the Primary Ring/Card over NFC. During finalization, the ECDH-encrypted key bundle (`EncryptedBackupData`) passes through phone RAM as a relay between the Primary Ring and Backup Cards. Enforcing Airplane Mode before any mnemonic generation, mnemonic import, or backup finalization ensures that radio interfaces are powered down whenever key material is handled.
 
 ---
 
-## 4. RAM-Only Backup State & Elimination of Disk Network/File Logging
+## 4. RAM-Only Backup State, Stripped Persistent Linking Keys & Elimination of Disk Logging
 
 ### What Changed
-- **Replaced Disk-Backed `BackupRepo` Storage with Volatile RAM (`BackupServiceHolder.kt` & `MultiWalletFinalizeModel.kt`)**:
+- **Replaced Disk-Backed `BackupRepo` Storage with Volatile RAM (`BackupServiceHolder.kt`, `MultiWalletFinalizeModel.kt`, `OnboardingMultiWalletModel.kt`)**:
   - In `libs/tangem-sdk-api/src/main/kotlin/com/tangem/sdk/api/BackupServiceHolder.kt`, bypassed `BackupService.init(sdk, activity)` (which uses Android `EncryptedSharedPreferences` on disk) and injected `inMemoryBackupStorage`, a volatile `ConcurrentHashMap` that returns defensive copies on read (`copyOf()`), zeroizes overwritten buffers (`put(...)?.fill(0)`), and zeroes out all stored byte arrays upon deletion or session completion (`clearActiveSession()`).
-  - Retained a strong reference (`activeBackupService`) during active onboarding so the JVM garbage collector cannot evict in-progress backup state mid-onboarding, and explicitly cleared it when onboarding completes or resets.
-  - Added startup cleanup to delete any legacy `"BackupData"` entry from `EncryptedSharedPreferences` and log any cleanup failure.
+  - Retained a strong reference (`activeBackupService`) during active onboarding so the JVM garbage collector cannot evict in-progress backup state mid-onboarding, and explicitly cleared it via `clearActiveSession()` on onboarding completion, card reset, reset cancellation (`ResetCardsModelCallbacks.onCancel()`), and user back/interrupt navigation (`OnboardingMultiWalletModel.onBack()`).
+  - Added startup cleanup to delete any legacy `"BackupData"` entry from `EncryptedSharedPreferences`.
+- **Stripped `PrimaryCard` (`linkingKey`) from Persistent `ScanResponse` Serialization (`DefaultOnboardingRepository.kt` & `ScanResponseAsStringSerializer.kt`)**:
+  - Stripped `primaryCard = null` in both `DefaultOnboardingRepository` (on save and load) and `ScanResponseAsStringSerializer` (on serialize and deserialize) so `PrimaryCard.linkingKey` is never written to persistent onboarding preferences or serialized `UserWallet.scanResponse` records on disk.
 - **Disabled File, Logcat, and Chucker Disk Loggers Across All Build Variants (`DefaultAppLogsStore.kt`, `TangemCardSDKLogger.kt`, `TangemLoggingInitializer.kt`, `DefaultRetrofitFactory.kt`)**:
   - Removed `FileLogWriter`, `NetworkLogsSaveInterceptor`, and `ChuckerInterceptor` across all build variants (including Debug and Internal builds).
   - Turned `TangemCardSDKLogger.log()` and `DefaultAppLogsStore.saveLogMessage()` into no-ops, and actively delete `filesDir/log.txt` and `filesDir/log.zip` on app startup.
 
 ### Why
-Bytecode inspection of `com.tangem.operations.backup.BackupRepo` in `tangem-sdk-kotlin` revealed that upstream Tangem serializes `BackupServiceData` (containing the user's `accessCode` and `EncryptedBackupData` map) to disk under `"BackupData"` in `EncryptedSharedPreferences` right after scanning the primary card so interrupted backups can resume after an app crash. Moving `BackupRepo` to zeroized volatile RAM and removing all file and Chucker SQLite network loggers eliminates disk persistence of backup payloads and HTTP traffic.
+Bytecode inspection of `com.tangem.operations.backup.BackupRepo` in `tangem-sdk-kotlin` revealed that upstream Tangem serializes `BackupServiceData` (containing the user's `accessCode` and `EncryptedBackupData` map) to disk under `"BackupData"` in `EncryptedSharedPreferences` right after scanning the primary card, and also persists `ScanResponse.primaryCard` (`linkingKey`) in onboarding preferences. Moving `BackupRepo` to zeroized volatile RAM, stripping `primaryCard` from disk serialization, and removing all file and Chucker SQLite network loggers eliminates disk persistence of backup payloads, linking keys, and HTTP traffic.
 
 ---
 
@@ -78,12 +82,12 @@ Bytecode inspection of `com.tangem.operations.backup.BackupRepo` in `tangem-sdk-
 ### What Changed
 - **Created & Hardened `HqTransparencyInterceptor.kt`**: Added `core/datasource-impl/src/main/java/com/tangem/datasource/remote/interceptors/HqTransparencyInterceptor.kt` and wired it into OkHttp clients in `TangemLoggingInitializer.kt` and `DefaultRetrofitFactory.kt`:
   - Uses strict domain matching (`host.equals(domain, ignoreCase = true) || host.endsWith(".$domain", ignoreCase = true)`) rather than substring matching.
-  - Inspects both HTTP request headers (`card_id`, `card_public_key`, `Authorization`, `DPoP`) and query parameters (`cardId`, `cardPublicKey`, `cid`, `walletId`).
-  - **Safe Request Body Handling**: Never buffers one-shot or duplex request bodies, never reads or buffers non-HQ (blockchain RPC) request bodies (logging only `contentLength` and `contentType` metadata so transaction broadcasts are never touched), and enforces a strict `4,096`-byte inspection cap (`MAX_INSPECTED_BODY_BYTES`) for Tangem HQ requests.
+  - **Redacted Header & Query Parameter Auditing**: Detects the presence of sensitive HTTP headers (`card_id`, `card_public_key`, `Authorization`, `DPoP`) and sensitive query parameters (`cardId`, `card_id`, `cardPublicKey`, `card_public_key`, `cid`, `walletId`, `wallet_id`, `token`, `access_token`, `refresh_token`, `id_token`, `code`, `signature`, `key`, `api_key`, `apikey`, `secret`, `password`) while recording only `"[REDACTED]"` in place of their raw values so credentials and card identifiers are never retained in memory or displayed on screen.
+  - **Zero Request Body Buffering**: Never reads or buffers HTTP request bodies (`body.writeTo(...)` is never called). Logs only `contentLength` and `contentType` metadata across all requests so sensitive request payloads are never copied into memory and outbound requests cannot be mutated or consumed.
   - Displays an on-screen **`📡 Outbound Request to Tangem HQ`** dialog whenever `verify.tangem.com` is contacted or any card/wallet identifier is detected, and maintains a bounded retrospective **Session Network Audit Log** strictly in volatile RAM.
 
 ### Why
-Instead of asking users to blindly trust network behavior, `HqTransparencyInterceptor` provides a safe, bounded, retrospective viewer of outbound requests to Tangem HQ without mutating or buffering blockchain RPC transactions.
+`HqTransparencyInterceptor` provides a safe, bounded, retrospective viewer of outbound requests to Tangem HQ without capturing sensitive header/query values or reading request bodies.
 
 ---
 
@@ -92,9 +96,9 @@ Instead of asking users to blindly trust network behavior, `HqTransparencyInterc
 ### What Changed
 - **Sanitized Public Config Assets & Build Fallbacks**: Added sanitized default configuration files (`config_prod.json`, `config_dev.json`, `providers_order.json`, dummy `google-services.json`) and null-safe config fallbacks across `TangemGatewayApiConfig.kt`, `Express.kt`, `Collectibles.kt`, `YieldSupply.kt`, and `TangemPay.kt`.
 - **Stripped `"PLACEHOLDER"` Private RPC Credentials (`GeneratedEnvironmentConfigConverter.kt`)**: Added `.noPlaceholder()` / `.noPlaceholderOrNull()` in `core/datasource-impl/src/main/java/com/tangem/datasource/local/config/environment/converter/GeneratedEnvironmentConfigConverter.kt` when constructing `BlockchainSdkConfig` and `GetBlockCredentials`, while preserving Blockchair's keyless free tier (`apiKey = listOf("")`, `authToken = null`).
-- **Added Fast HTTPS Public RPC Pool & Validated Local-First Merging (`providers_order.json` & `BlockchainProvidersResponseMerger.kt`)**:
+- **Added Fast HTTPS Public RPC Pool & Scoped Local Merging (`providers_order.json` & `BlockchainProvidersResponseMerger.kt`)**:
   - Added fast, non-throttled public NEAR Protocol JSON-RPC endpoints (`https://rpc.mainnet.fastnear.com/`, `https://free.rpc.fastnear.com/`, `https://near.drpc.org/`, `https://rpc.mainnet.near.org/`) and TON public JSON-RPC (`https://toncenter.com/api/v2/`) to `app/src/main/assets/tangem-app-config/providers_order.json`.
-  - Updated `libs/blockchain-sdk/src/main/java/com/tangem/blockchainsdk/providers/BlockchainProvidersResponseMerger.kt` to enforce `https://` on all public provider URLs (`url.startsWith("https://", ignoreCase = true)`), filter both `local` and `remote` configurations through `filterUnsupportedProviders().filterInvalidProviders()`, and prepend only validated `ProviderModel.Public` local fallbacks when merging with remote configurations.
+  - Updated `libs/blockchain-sdk/src/main/java/com/tangem/blockchainsdk/providers/BlockchainProvidersResponseMerger.kt` to enforce `https://` on all public provider URLs (`url.startsWith("https://", ignoreCase = true)`), filter both `local` and `remote` configurations through `filterUnsupportedProviders().filterInvalidProviders()`, prepend validated `ProviderModel.Public` local endpoints specifically for `near-protocol` (to bypass rate-limited default archival nodes), and append local public endpoints as fallbacks after remote providers for all other blockchains so remote provider priority ordering is preserved.
 
 ### Why
 Upstream Tangem stores `tangem-app-config` in a private Git submodule containing proprietary API keys (NowNodes, GetBlock, QuickNode, etc.). Without those keys, `"PLACEHOLDER"` strings previously instantiated broken private RPC providers, and remote config updates overwrote local public RPC fallbacks. Filtering `"PLACEHOLDER"` credentials and preserving validated `https://` local public endpoints ensures reliable fee estimation and transaction broadcasting without proprietary API keys.

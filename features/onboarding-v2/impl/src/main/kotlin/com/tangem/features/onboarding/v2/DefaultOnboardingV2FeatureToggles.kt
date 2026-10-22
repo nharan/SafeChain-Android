@@ -12,5 +12,5 @@ internal class DefaultOnboardingV2FeatureToggles @Inject constructor(
     override val isAddressSyncEnabled: Boolean
         get() = featureTogglesManager.isFeatureEnabled(FeatureToggles.ADDRESS_SYNC_ENABLED)
     override val isCardLinkedStatusUpdateEnabled: Boolean
-        get() = false
+        get() = true
 }

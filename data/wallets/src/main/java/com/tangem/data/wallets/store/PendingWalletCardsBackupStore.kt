@@ -21,6 +21,16 @@ internal class PendingWalletCardsBackupStore(
         dataStore.updateData { pending -> (pending + entry).takeLast(MAX_PENDING) }
     }
 
+    suspend fun putForWallet(entry: PendingWalletCardsBackup) {
+        dataStore.updateData { pending ->
+            (pending.filterNot { it.walletId == entry.walletId } + entry).takeLast(MAX_PENDING)
+        }
+    }
+
+    suspend fun getForWallet(walletId: String): PendingWalletCardsBackup? {
+        return dataStore.data.first().lastOrNull { it.walletId == walletId }
+    }
+
     suspend fun getAll(): PendingWalletCardsBackups = dataStore.data.first()
 
     suspend fun remove(id: String) {

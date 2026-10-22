@@ -67,17 +67,13 @@ class DefaultWalletAccountsFetcherTest {
     private val eTagKey = ETagsStore.Key.WalletAccounts
     private val migratedAccountsResponse = createGetWalletAccountsResponse(userWalletId)
 
-    @BeforeAll
-    fun setUp() {
+    @BeforeEach
+    fun setUpEach() {
         every { accountsResponseStoreFactory.create(userWalletId) } returns accountsResponseStore
         every { accountsResponseStore.data } returns accountsResponseStoreFlow
 
         coEvery { tokensMigration.migrate(userWalletId) } returns migratedAccountsResponse.right()
         coEvery { eTagsStore.getSyncOrNull(userWalletId, eTagKey) } returns eTag
-    }
-
-    @BeforeEach
-    fun setUpEach() {
         every { jointAccountFeatureToggles.isJointAccountEnabled } returns false
     }
 
@@ -85,8 +81,14 @@ class DefaultWalletAccountsFetcherTest {
     fun tearDown() {
         clearMocks(
             walletAccountsApi,
+            accountsResponseStoreFactory,
+            accountsResponseStore,
+            tokensMigration,
             userTokensSaver,
             fetchWalletAccountsErrorHandler,
+            defaultWalletAccountsResponseFactory,
+            eTagsStore,
+            jointAccountFeatureToggles,
         )
 
         accountsResponseStoreFlow.value = null
@@ -118,6 +120,7 @@ class DefaultWalletAccountsFetcherTest {
 
             // Assert
             Truth.assertThat(stored.captured.invoke(null)?.accounts).containsExactly(ownAccount)
+            coVerify(exactly = 0) { walletAccountsApi.getAccounts(any(), any()) }
         }
 
         @Test
@@ -134,16 +137,14 @@ class DefaultWalletAccountsFetcherTest {
             Truth.assertThat(stored.captured.invoke(null)?.accounts)
                 .containsExactly(ownAccount, jointAccount)
                 .inOrder()
+            coVerify(exactly = 0) { walletAccountsApi.getAccounts(any(), any()) }
         }
 
         private fun arrangeFetch(
             accounts: List<WalletAccountDTO>,
         ): CapturingSlot<suspend (GetWalletAccountsResponse?) -> GetWalletAccountsResponse?> {
             val response = createGetWalletAccountsResponse(userWalletId).copy(accounts = accounts)
-
-            coEvery {
-                walletAccountsApi.getAccounts(walletId = userWalletId.stringValue, eTag = eTag)
-            } returns ApiResponse.Success(data = response, headers = mapOf(ETAG_HEADER to listOf(eTag)))
+            accountsResponseStoreFlow.value = response
 
             val transform = slot<suspend (GetWalletAccountsResponse?) -> GetWalletAccountsResponse?>()
             coEvery { accountsResponseStore.updateData(capture(transform)) } returns response
@@ -157,66 +158,71 @@ class DefaultWalletAccountsFetcherTest {
     inner class Fetch {
 
         @Test
-        fun `fetch should call assignTokens when unassignedTokens are not empty`() = runTest {
-            // Arrange
-            val savedAccountsResponse = null
-            val unassignedToken = createToken(accountId = null)
+        fun `fetch should initialize default accounts locally when no saved accounts exist and never call API`() =
+            runTest {
+                // Arrange
+                val defaultAccountsResponse = createGetWalletAccountsResponse(userWalletId)
+                accountsResponseStoreFlow.value = null
 
+                coEvery {
+                    fetchWalletAccountsErrorHandler.handle(
+                        error = any(),
+                        userWalletId = userWalletId,
+                        savedAccountsResponse = null,
+                        pushWalletAccounts = any(),
+                        storeWalletAccounts = any(),
+                    )
+                } returns FetchResult(defaultAccountsResponse)
+
+                coEvery { accountsResponseStore.updateData(any()) } returns defaultAccountsResponse
+
+                // Act
+                val result = fetcher.fetch(userWalletId)
+
+                // Assert
+                Truth.assertThat(result).isEqualTo(migratedAccountsResponse)
+                coVerify(exactly = 0) {
+                    walletAccountsApi.getAccounts(any(), any())
+                    walletAccountsApi.saveAccounts(any(), any(), any())
+                }
+                coVerify(exactly = 1) {
+                    fetchWalletAccountsErrorHandler.handle(
+                        error = any(),
+                        userWalletId = userWalletId,
+                        savedAccountsResponse = null,
+                        pushWalletAccounts = any(),
+                        storeWalletAccounts = any(),
+                    )
+                    tokensMigration.migrate(userWalletId)
+                }
+            }
+
+        @Test
+        fun `fetch should call assignTokens locally when unassignedTokens are not empty`() = runTest {
+            // Arrange
+            val unassignedToken = createToken(accountId = null)
             val accounts = listOf(createWalletAccountDTO(userWalletId = userWalletId, tokens = null))
-            val accountsResponse = createGetWalletAccountsResponse(
+            val savedAccountsResponse = createGetWalletAccountsResponse(
                 userWalletId = userWalletId,
                 unassignedTokens = listOf(unassignedToken),
-            )
-                .copy(accounts = accounts)
-
-            val newETag = "newEtag"
-            val apiResponse = ApiResponse.Success(
-                data = accountsResponse,
-                headers = mapOf(ETAG_HEADER to listOf(newETag)),
-            )
+            ).copy(accounts = accounts)
 
             accountsResponseStoreFlow.value = savedAccountsResponse
-
-            val accountId = "957B88B12730E646E0F33D3618B77DFA579E8231E3C59C7104BE7165611C8027"
-            val updatedAccountsResponse = accountsResponse.copy(
-                accounts = accountsResponse.accounts.map {
-                    it.copy(tokens = listOf(unassignedToken.copy(accountId = accountId)))
-                },
-                unassignedTokens = emptyList(),
-            )
-
-            coEvery {
-                walletAccountsApi.getAccounts(walletId = userWalletId.stringValue, eTag = eTag)
-            } returns apiResponse
-
-            coEvery { accountsResponseStore.updateData(any()) } returns accountsResponse
-
-            coEvery {
-                walletAccountsApi.saveAccounts(
-                    walletId = userWalletId.stringValue,
-                    eTag = eTag,
-                    body = SaveWalletAccountsResponse(updatedAccountsResponse.accounts),
-                )
-            } returns ApiResponse.Success(data = updatedAccountsResponse)
+            val transforms = mutableListOf<suspend (GetWalletAccountsResponse?) -> GetWalletAccountsResponse?>()
+            coEvery { accountsResponseStore.updateData(capture(transforms)) } returns savedAccountsResponse
 
             // Act
             fetcher.fetch(userWalletId)
 
             // Assert
-            coVerifyOrder {
-                accountsResponseStoreFactory.create(userWalletId = userWalletId)
-                accountsResponseStore.data
-                eTagsStore.getSyncOrNull(userWalletId = userWalletId, key = eTagKey)
-                walletAccountsApi.getAccounts(walletId = userWalletId.stringValue, eTag = eTag)
-                eTagsStore.store(userWalletId = userWalletId, key = eTagKey, value = newETag)
-                accountsResponseStoreFactory.create(userWalletId = userWalletId)
-                accountsResponseStore.updateData(any())
-                accountsResponseStoreFactory.create(userWalletId = userWalletId)
-                accountsResponseStore.updateData(any())
-                tokensMigration.migrate(userWalletId)
-            }
+            Truth.assertThat(transforms).hasSize(2)
+            val assigned = transforms.last().invoke(null)
+            Truth.assertThat(assigned?.unassignedTokens).isEmpty()
+            Truth.assertThat(assigned?.accounts?.first()?.tokens).hasSize(1)
 
-            coVerify(inverse = true) {
+            coVerify(exactly = 0) {
+                walletAccountsApi.getAccounts(any(), any())
+                walletAccountsApi.saveAccounts(any(), any(), any())
                 fetchWalletAccountsErrorHandler.handle(
                     error = any(),
                     userWalletId = any(),
@@ -224,30 +230,25 @@ class DefaultWalletAccountsFetcherTest {
                     pushWalletAccounts = any(),
                     storeWalletAccounts = any(),
                 )
+            }
+            coVerify(exactly = 1) {
+                userTokensSaver.pushWithRetryer(
+                    userWalletId = userWalletId,
+                    response = any(),
+                )
+                tokensMigration.migrate(userWalletId)
             }
         }
 
         @Test
         fun `fetch should not call assignTokens when unassignedTokens are empty`() = runTest {
             // Arrange
-            val savedAccountsResponse = null
-            val accountsResponse = createGetWalletAccountsResponse(
+            val savedAccountsResponse = createGetWalletAccountsResponse(
                 userWalletId = userWalletId,
                 unassignedTokens = emptyList(),
             )
-            val newETag = "newEtag"
-            val apiResponse = ApiResponse.Success(
-                data = accountsResponse,
-                headers = mapOf(ETAG_HEADER to listOf(newETag)),
-            )
-
             accountsResponseStoreFlow.value = savedAccountsResponse
-
-            coEvery {
-                walletAccountsApi.getAccounts(walletId = userWalletId.stringValue, eTag = eTag)
-            } returns apiResponse
-
-            coEvery { accountsResponseStore.updateData(any()) } returns accountsResponse
+            coEvery { accountsResponseStore.updateData(any()) } returns savedAccountsResponse
 
             // Act
             fetcher.fetch(userWalletId)
@@ -256,9 +257,6 @@ class DefaultWalletAccountsFetcherTest {
             coVerifyOrder {
                 accountsResponseStoreFactory.create(userWalletId = userWalletId)
                 accountsResponseStore.data
-                eTagsStore.getSyncOrNull(userWalletId = userWalletId, key = eTagKey)
-                walletAccountsApi.getAccounts(walletId = userWalletId.stringValue, eTag = eTag)
-                eTagsStore.store(userWalletId = userWalletId, key = eTagKey, value = newETag)
                 accountsResponseStoreFactory.create(userWalletId = userWalletId)
                 accountsResponseStore.updateData(any())
                 tokensMigration.migrate(userWalletId)
@@ -272,65 +270,16 @@ class DefaultWalletAccountsFetcherTest {
                     pushWalletAccounts = any(),
                     storeWalletAccounts = any(),
                 )
-
+                walletAccountsApi.getAccounts(walletId = any(), eTag = any())
                 walletAccountsApi.saveAccounts(walletId = any(), eTag = any(), body = any())
                 userTokensSaver.push(any(), any())
             }
         }
 
         @Test
-        fun `fetch should call error handler when getWalletAccounts returns error`() = runTest {
+        fun `GIVEN saved response with empty accounts WHEN fetch THEN initializes default accounts locally`() = runTest {
             // Arrange
-            val savedAccountsResponse = createGetWalletAccountsResponse(userWalletId)
-            val apiError = ApiResponse.Error(ApiResponseError.NetworkException())
-
-            accountsResponseStoreFlow.value = savedAccountsResponse
-
-            coEvery {
-                walletAccountsApi.getAccounts(walletId = userWalletId.stringValue, eTag = eTag)
-            } returns apiError as ApiResponse<GetWalletAccountsResponse>
-
-            coEvery {
-                fetchWalletAccountsErrorHandler.handle(
-                    error = apiError.cause,
-                    userWalletId = userWalletId,
-                    savedAccountsResponse = savedAccountsResponse,
-                    pushWalletAccounts = any(),
-                    storeWalletAccounts = any(),
-                )
-            } returns FetchResult(savedAccountsResponse)
-
-            // Act
-            fetcher.fetch(userWalletId)
-
-            // Assert
-            coVerifyOrder {
-                accountsResponseStoreFactory.create(userWalletId = userWalletId)
-                accountsResponseStore.data
-                eTagsStore.getSyncOrNull(userWalletId = userWalletId, key = eTagKey)
-                walletAccountsApi.getAccounts(walletId = userWalletId.stringValue, eTag = eTag)
-
-                fetchWalletAccountsErrorHandler.handle(
-                    error = apiError.cause,
-                    userWalletId = userWalletId,
-                    savedAccountsResponse = savedAccountsResponse,
-                    pushWalletAccounts = any(),
-                    storeWalletAccounts = any(),
-                )
-                tokensMigration.migrate(userWalletId)
-            }
-
-            coVerify(inverse = true) {
-                eTagsStore.store(userWalletId = any(), key = any(), value = any())
-                walletAccountsApi.saveAccounts(walletId = any(), eTag = any(), body = any())
-                userTokensSaver.push(userWalletId = any(), response = any())
-            }
-        }
-
-        @Test
-        fun `GIVEN response with empty accounts and push request is failed THEN eTag will be cleared`() = runTest {
-            // Arrange
-            val savedAccountsResponse = GetWalletAccountsResponse(
+            val emptySavedResponse = GetWalletAccountsResponse(
                 wallet = GetWalletAccountsResponse.Wallet(
                     group = null,
                     sort = null,
@@ -340,77 +289,31 @@ class DefaultWalletAccountsFetcherTest {
                 accounts = emptyList(),
                 unassignedTokens = emptyList(),
             )
-            val getResponse = ApiResponse.Error(
-                cause = ApiResponseError.HttpException(
-                    code = ApiResponseError.HttpException.Code.NOT_MODIFIED,
-                    message = null,
-                    errorBody = null,
-                ),
-                headers = mapOf(ETAG_HEADER to listOf(eTag)),
-            )
+            val initializedResponse = createGetWalletAccountsResponse(userWalletId)
 
-            accountsResponseStoreFlow.value = savedAccountsResponse
-
-            coEvery {
-                walletAccountsApi.getAccounts(walletId = userWalletId.stringValue, eTag = eTag)
-            } returns getResponse as ApiResponse<GetWalletAccountsResponse>
-
-            coEvery {
-                fetchWalletAccountsErrorHandler.handle(
-                    error = getResponse.cause,
-                    userWalletId = userWalletId,
-                    savedAccountsResponse = savedAccountsResponse,
-                    pushWalletAccounts = any(),
-                    storeWalletAccounts = any(),
-                )
-            } returns FetchResult(savedAccountsResponse)
+            accountsResponseStoreFlow.value = emptySavedResponse
 
             coEvery {
                 defaultWalletAccountsResponseFactory.create(userWalletId = userWalletId, userTokensResponse = null)
-            } returns savedAccountsResponse
+            } returns initializedResponse
 
-            coEvery { accountsResponseStore.updateData(any()) } returns savedAccountsResponse
-
-            val saveResponse = ApiResponse.Error(ApiResponseError.TimeoutException())
-            coEvery {
-                walletAccountsApi.saveAccounts(
-                    walletId = userWalletId.stringValue,
-                    eTag = eTag,
-                    body = SaveWalletAccountsResponse(savedAccountsResponse.accounts),
-                )
-            } returns saveResponse as ApiResponse<GetWalletAccountsResponse>
+            coEvery { accountsResponseStore.updateData(any()) } returns initializedResponse
 
             // Act
             fetcher.fetch(userWalletId)
 
             // Assert
             coVerify {
-                accountsResponseStoreFactory.create(userWalletId = userWalletId)
-                accountsResponseStore.data
-                eTagsStore.getSyncOrNull(userWalletId = userWalletId, key = eTagKey)
-                walletAccountsApi.getAccounts(walletId = userWalletId.stringValue, eTag = eTag)
-                eTagsStore.store(userWalletId = userWalletId, key = eTagKey, value = eTag)
-                accountsResponseStore.updateData(any())
-                fetchWalletAccountsErrorHandler.handle(
-                    error = getResponse.cause,
-                    userWalletId = userWalletId,
-                    savedAccountsResponse = savedAccountsResponse,
-                    pushWalletAccounts = any(),
-                    storeWalletAccounts = any(),
-                )
                 defaultWalletAccountsResponseFactory.create(userWalletId = userWalletId, userTokensResponse = null)
-                eTagsStore.getSyncOrNull(userWalletId = userWalletId, key = eTagKey)
-                walletAccountsApi.saveAccounts(
-                    walletId = userWalletId.stringValue,
-                    eTag = eTag,
-                    body = SaveWalletAccountsResponse(savedAccountsResponse.accounts),
-                )
-                eTagsStore.clear(userWalletId, eTagKey)
                 userTokensSaver.push(
                     userWalletId = userWalletId,
-                    response = savedAccountsResponse.toUserTokensResponse(),
+                    response = initializedResponse.toUserTokensResponse(),
                 )
                 tokensMigration.migrate(userWalletId)
+            }
+            coVerify(exactly = 0) {
+                walletAccountsApi.getAccounts(any(), any())
+                walletAccountsApi.saveAccounts(any(), any(), any())
             }
         }
     }
@@ -482,59 +385,103 @@ class DefaultWalletAccountsFetcherTest {
     inner class Push {
 
         @Test
-        fun `push should call saveWalletAccounts with correct params`() = runTest {
+        fun `push should persist newly created renamed and reordered accounts locally without calling API`() = runTest {
             // Arrange
-            val getResponse = createGetWalletAccountsResponse(userWalletId, tokens = null)
-            val saveResponse = SaveWalletAccountsResponse(getResponse.accounts)
+            val mainToken = createToken(accountId = "acc-main")
+            val mainAccount = createWalletAccountDTO(
+                userWalletId = userWalletId,
+                accountId = "acc-main",
+                accountName = "Main",
+                derivationIndex = 0,
+                tokens = listOf(mainToken),
+            )
+            val currentResponse = createGetWalletAccountsResponse(userWalletId).copy(
+                accounts = listOf(mainAccount),
+            )
+            accountsResponseStoreFlow.value = currentResponse
+            coEvery { accountsResponseStore.updateData(any()) } returns currentResponse
 
-            coEvery {
-                walletAccountsApi.saveAccounts(
-                    walletId = userWalletId.stringValue,
-                    eTag = eTag,
-                    body = saveResponse,
-                )
-            } returns ApiResponse.Success(data = getResponse)
+            val secondAccountSaveDto = SaveWalletAccountsResponse.AccountDTO(
+                id = "acc-second",
+                name = "Savings",
+                derivationIndex = 1,
+                icon = mainAccount.icon,
+                iconColor = mainAccount.iconColor,
+                type = WalletAccountDTO.Type.CRYPTO,
+            )
+            val renamedMainSaveDto = SaveWalletAccountsResponse.AccountDTO(
+                id = "acc-main",
+                name = "Primary Renamed",
+                derivationIndex = 0,
+                icon = mainAccount.icon,
+                iconColor = mainAccount.iconColor,
+                type = WalletAccountDTO.Type.CRYPTO,
+            )
+            val saveRequest = SaveWalletAccountsResponse(
+                accounts = listOf(secondAccountSaveDto, renamedMainSaveDto),
+            )
 
             // Act
-            fetcher.push(userWalletId, saveResponse)
+            val result = fetcher.push(userWalletId, saveRequest)
 
             // Assert
-            coVerify {
-                walletAccountsApi.saveAccounts(
-                    walletId = userWalletId.stringValue,
-                    eTag = eTag,
-                    body = saveResponse,
-                )
+            Truth.assertThat(result).isNotNull()
+            Truth.assertThat(result!!.accounts.map { it.id }).containsExactly("acc-second", "acc-main").inOrder()
+            Truth.assertThat(result.accounts[1].name).isEqualTo("Primary Renamed")
+            Truth.assertThat(result.accounts[1].tokens).containsExactly(mainToken.copy(accountId = "acc-main"))
+            Truth.assertThat(result.wallet.totalAccounts).isEqualTo(2)
+
+            coVerify(exactly = 0) {
+                walletAccountsApi.saveAccounts(any(), any(), any())
+                walletAccountsApi.getAccounts(any(), any())
+            }
+            coVerify(exactly = 1) {
+                accountsResponseStore.updateData(any())
             }
         }
 
         @Test
-        fun `push should throw error when saveWalletAccounts returns PRECONDITION_FAILED`() = runTest {
-            // Arrange
-            val accounts = listOf(
-                createWalletAccountDTO(userWalletId = userWalletId, tokens = null),
-            )
-            val response = SaveWalletAccountsResponse(accounts)
-            val apiError = ApiResponseError.HttpException(
-                code = ApiResponseError.HttpException.Code.PRECONDITION_FAILED,
-                message = null,
-                errorBody = null,
-            )
-            val saveApiResponse = ApiResponse.Error(apiError)
-            coEvery {
-                walletAccountsApi.saveAccounts(
-                    walletId = userWalletId.stringValue,
-                    eTag = eTag,
-                    body = response,
+        fun `push should remove archived accounts from active list and increment totalArchivedAccounts locally`() =
+            runTest {
+                // Arrange
+                val acc1 = createWalletAccountDTO(
+                    userWalletId = userWalletId,
+                    accountId = "acc-1",
+                    accountName = "Main",
+                    derivationIndex = 0,
                 )
-            } returns saveApiResponse as ApiResponse<GetWalletAccountsResponse>
+                val acc2 = createWalletAccountDTO(
+                    userWalletId = userWalletId,
+                    accountId = "acc-2",
+                    accountName = "Trading",
+                    derivationIndex = 1,
+                )
+                val currentResponse = createGetWalletAccountsResponse(userWalletId).copy(
+                    wallet = GetWalletAccountsResponse.Wallet(
+                        group = null,
+                        sort = null,
+                        totalAccounts = 2,
+                        totalArchivedAccounts = 0,
+                    ),
+                    accounts = listOf(acc1, acc2),
+                )
+                accountsResponseStoreFlow.value = currentResponse
+                coEvery { accountsResponseStore.updateData(any()) } returns currentResponse
 
-            // Act
-            val actual = runCatching { fetcher.push(userWalletId, response) }.exceptionOrNull()!!
+                // Archive acc-2 by pushing only acc-1
+                val saveRequest = SaveWalletAccountsResponse(accounts = listOf(acc1))
 
-            // Assert
-            Truth.assertThat(actual).isEqualTo(apiError)
-        }
+                // Act
+                val result = fetcher.push(userWalletId, saveRequest)
+
+                // Assert
+                Truth.assertThat(result).isNotNull()
+                Truth.assertThat(result!!.accounts.map { it.id }).containsExactly("acc-1")
+                Truth.assertThat(result.wallet.totalArchivedAccounts).isEqualTo(1)
+                coVerify(exactly = 0) {
+                    walletAccountsApi.saveAccounts(any(), any(), any())
+                }
+            }
     }
 
     private fun createToken(

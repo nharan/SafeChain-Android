@@ -28,9 +28,27 @@ internal class WalletCardsBackupReporter @Inject constructor(
 
      *                     wallet creation take it from [usedSeedPhrase]
      */
-    @Suppress("UnusedPrivateMember", "UnusedParameter")
     fun report(scanResponse: ScanResponse, cards: List<WalletCardBackup>, usedSeed: Boolean) {
-        // Telemetry disabled: never report card backup status or usedSeed to backend
+        if (onboardingV2FeatureToggles.isCardLinkedStatusUpdateEnabled.not()) return
+
+        val userWalletId = UserWalletIdBuilder.scanResponse(scanResponse).build()
+
+        if (userWalletId == null) {
+            TangemLogger.e("Unable to build user wallet id, cards backup state is not reported")
+            return
+        }
+
+        // Persisted strictly locally via ReportWalletCardsBackupUseCase -> DefaultWalletCardsBackupRepository
+        // to track per-card backup verification integrity without transmitting card clusters to Tangem HQ.
+        appScope.launch {
+            reportWalletCardsBackupUseCase(
+                userWalletId = userWalletId,
+                cards = cards,
+                usedSeed = usedSeed,
+            ).onLeft { error ->
+                TangemLogger.e("Unable to record local cards backup state: $error")
+            }
+        }
     }
 
     internal companion object {

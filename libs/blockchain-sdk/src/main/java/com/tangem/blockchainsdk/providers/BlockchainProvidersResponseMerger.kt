@@ -18,6 +18,7 @@ internal class BlockchainProvidersResponseMerger @Inject internal constructor(
 ) {
 
     private val requiredHttpsPrefix = "https://"
+    private val nearProtocolKey = "near-protocol"
 
     /**
      * Merge blockchains with non-empty providers from [remote] with blockchains from [local]
@@ -47,7 +48,11 @@ internal class BlockchainProvidersResponseMerger @Inject internal constructor(
                     .filterIsInstance<ProviderModel.Public>()
                     .map { it.addSlashIfAbsent() }
                     .filterNot { it in remoteNormalized }
-                (localPublicProviders + providers).distinct()
+                if (key == nearProtocolKey) {
+                    (localPublicProviders + providers).distinct()
+                } else {
+                    (providers + localPublicProviders).distinct()
+                }
             } else {
                 providers
                     .filterUnsupportedProviders()

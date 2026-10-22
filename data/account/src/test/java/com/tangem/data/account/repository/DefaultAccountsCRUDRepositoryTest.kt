@@ -513,7 +513,24 @@ class DefaultAccountsCRUDRepositoryTest {
         private val accountId = AccountId.forCryptoPortfolio(userWalletId, DerivationIndex.Main)
 
         @Test
-        fun `fetchArchivedAccounts should store archived accounts in store`() = runTest {
+        fun `fetchArchivedAccounts should initialize empty list in store when empty without calling API`() = runTest {
+            // Arrange
+            archivedAccountsInnerStore.store(value = null)
+
+            // Act
+            repository.fetchArchivedAccounts(userWalletId)
+            val actual = archivedAccountsStore.getSyncOrNull()
+
+            // Assert
+            Truth.assertThat(actual).isEmpty()
+
+            coVerify(exactly = 0) {
+                walletAccountsApi.getArchivedAccounts(any(), any())
+            }
+        }
+
+        @Test
+        fun `fetchArchivedAccounts should preserve existing local archived accounts without calling API`() = runTest {
             // Arrange
             val accountDTO = WalletAccountDTO(
                 id = accountId.value,
@@ -524,19 +541,8 @@ class DefaultAccountsCRUDRepositoryTest {
                 totalNetworks = 0,
                 totalTokens = 0,
             )
-
-            val eTag = "etag123"
-            val apiResponse = mockk<GetWalletArchivedAccountsResponse> {
-                every { this@mockk.accounts } returns listOf(accountDTO)
-            }
-
             val archivedAccount = ArchivedAccountConverter(userWalletId).convert(accountDTO)
-
-            coEvery { archivedAccountsETagStore.getSyncOrNull() } returns mapOf(archivedETagKey to eTag)
-
-            coEvery {
-                walletAccountsApi.getArchivedAccounts(userWalletId.stringValue, eTag)
-            } returns ApiResponse.Success(apiResponse)
+            archivedAccountsStore.store(value = listOf(archivedAccount))
 
             // Act
             repository.fetchArchivedAccounts(userWalletId)
@@ -544,35 +550,8 @@ class DefaultAccountsCRUDRepositoryTest {
 
             // Assert
             Truth.assertThat(actual).containsExactly(archivedAccount)
-
-            coVerifyOrder {
-                archivedAccountsETagStore.getSyncOrNull()
-                archivedAccountsStoreFactory.create(userWalletId)
-                walletAccountsApi.getArchivedAccounts(userWalletId.stringValue, eTag)
-                archivedAccountsETagStore.update(any())
-            }
-        }
-
-        @Test
-        fun `fetchArchivedAccounts should throw exception if API returns error`() = runTest {
-            // Arrange
-            val eTag = "etag123"
-            val exception = Exception("API error")
-
-            coEvery { archivedAccountsETagStore.getSyncOrNull() } returns mapOf(archivedETagKey to eTag)
-            coEvery { walletAccountsApi.getArchivedAccounts(userWalletId.stringValue, eTag) } throws exception
-
-            // Act
-            val actual = runCatching { repository.fetchArchivedAccounts(userWalletId) }.exceptionOrNull()!!
-
-            // Assert
-            Truth.assertThat(actual).isSameInstanceAs(exception)
-            Truth.assertThat(actual).hasMessageThat().isEqualTo(exception.message)
-            Truth.assertThat(archivedAccountsStore.getSyncOrNull()).isNull()
-
-            coVerifyOrder {
-                archivedAccountsETagStore.getSyncOrNull()
-                walletAccountsApi.getArchivedAccounts(userWalletId.stringValue, eTag)
+            coVerify(exactly = 0) {
+                walletAccountsApi.getArchivedAccounts(any(), any())
             }
         }
     }

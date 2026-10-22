@@ -115,10 +115,50 @@ internal class DefaultAccountsCRUDRepository(
     }
 
     /**
-     * Hardened build: persists accounts strictly to local storage without pushing walletId/accounts to Tangem backend.
+     * Hardened build: persists accounts and archived account deltas strictly to local storage
+     * without pushing walletId/accounts to Tangem backend.
      */
     override suspend fun saveAccounts(accountList: AccountList) {
-        saveAccountsLocally(accountList)
+        updateLocalArchivedAccounts(accountList)
+
+        val syncedResponse = walletAccountsSaver.push(
+            userWalletId = accountList.userWalletId,
+            body = SaveWalletAccountsResponseConverter.convert(value = accountList),
+        )
+
+        if (syncedResponse != null) {
+            walletAccountsSaver.store(
+                userWalletId = accountList.userWalletId,
+                response = syncedResponse,
+            )
+        }
+    }
+
+    private suspend fun updateLocalArchivedAccounts(accountList: AccountList) {
+        val previousResponse = getAccountsResponseSync(userWalletId = accountList.userWalletId) ?: return
+        val activeIds = accountList.accounts.map { it.accountId.value }.toSet()
+        val converter = ArchivedAccountConverter(userWalletId = accountList.userWalletId)
+
+        val newlyArchived = previousResponse.accounts
+            .filter { it.id !in activeIds }
+            .map { dto ->
+                val tokens = dto.tokens.orEmpty()
+                converter.convert(
+                    dto.copy(
+                        totalTokens = dto.totalTokens ?: tokens.size,
+                        totalNetworks = dto.totalNetworks ?: tokens.map { it.networkId }.distinct().size,
+                    ),
+                )
+            }
+
+        val store = getArchivedAccountsStore(userWalletId = accountList.userWalletId)
+        val currentStored = store.getSyncOrNull().orEmpty()
+        val remainingArchived = currentStored.filter { it.accountId.value !in activeIds }
+        val mergedArchived = (remainingArchived + newlyArchived).distinctBy { it.accountId }
+
+        if (newlyArchived.isNotEmpty() || remainingArchived.size != currentStored.size) {
+            store.store(value = mergedArchived)
+        }
     }
 
     override suspend fun saveAccount(account: Account.CryptoPortfolio) {

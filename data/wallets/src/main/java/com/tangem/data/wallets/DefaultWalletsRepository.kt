@@ -195,6 +195,7 @@ internal class DefaultWalletsRepository(
     }
 
     override suspend fun getWalletsInfo(applicationId: String, updateCache: Boolean): List<UserWalletRemoteInfo> {
+        // Hardened build: resolve wallet info strictly from local storage; never query Tangem backend with applicationId
         return emptyList()
     }
 
@@ -206,27 +207,8 @@ internal class DefaultWalletsRepository(
         userWalletId: UserWalletId,
         promoCode: String,
         bitcoinAddress: String,
-    ): Either<ActivatePromoCodeError, String> = withContext(dispatchers.io) {
-        tangemTechApi.activatePromoCode(
-            body = PromocodeActivationBody(
-                promoCode = promoCode,
-                address = bitcoinAddress,
-                walletId = userWalletId.stringValue,
-            ),
-        ).fold(
-            onSuccess = { it.status.right() },
-            onError = { apiResponseError ->
-                val error = when (apiResponseError) {
-                    is HttpException -> when (apiResponseError.code) {
-                        HttpException.Code.NOT_FOUND -> ActivatePromoCodeError.InvalidPromoCode
-                        HttpException.Code.CONFLICT -> ActivatePromoCodeError.PromocodeAlreadyUsed
-                        else -> ActivatePromoCodeError.ActivationFailed
-                    }
-                    else -> ActivatePromoCodeError.ActivationFailed
-                }
-
-                error.left()
-            },
-        )
+    ): Either<ActivatePromoCodeError, String> {
+        // Hardened build: never transmit walletId or bitcoinAddress to Tangem backend for promo code activation
+        return ActivatePromoCodeError.ActivationFailed.left()
     }
 }

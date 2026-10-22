@@ -24,6 +24,9 @@ internal object AirplaneModeGuardrail {
     @Volatile
     private var appContext: Context? = null
 
+    @Volatile
+    internal var statusOverrideForTesting: RadioStatus? = null
+
     fun registerContext(context: Context) {
         appContext = context.applicationContext ?: context
     }
@@ -57,14 +60,16 @@ internal object AirplaneModeGuardrail {
     }
 
     fun checkStatus(): RadioStatus {
-        val context = resolveContext()
-        val isAirplaneOn = if (context != null) {
-            runCatching {
-                Settings.Global.getInt(context.contentResolver, Settings.Global.AIRPLANE_MODE_ON, 0) != 0
-            }.getOrDefault(false)
-        } else {
-            false
-        }
+        statusOverrideForTesting?.let { return it }
+        val context = resolveContext() ?: return RadioStatus(
+            isAirplaneModeOn = true,
+            isWifiActive = false,
+            isCellularActive = false,
+            isOtherNetworkActive = false,
+        )
+        val isAirplaneOn = runCatching {
+            Settings.Global.getInt(context.contentResolver, Settings.Global.AIRPLANE_MODE_ON, 0) != 0
+        }.getOrDefault(false)
 
         var wifiActive = false
         var cellularActive = false

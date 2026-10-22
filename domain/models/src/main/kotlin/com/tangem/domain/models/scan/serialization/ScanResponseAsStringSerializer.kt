@@ -25,10 +25,15 @@ internal object ScanResponseAsStringSerializer : KSerializer<ScanResponse> {
     override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor("ScanResponse", PrimitiveKind.STRING)
 
     override fun deserialize(decoder: Decoder): ScanResponse {
-        return moshi.adapter(ScanResponse::class.java).fromJson(decoder.decodeString())!!
+        return moshi.adapter(ScanResponse::class.java)
+            .fromJson(decoder.decodeString())!!
+            .copy(primaryCard = null)
     }
 
     override fun serialize(encoder: Encoder, value: ScanResponse) {
-        encoder.encodeString(moshi.adapter(ScanResponse::class.java).toJson(value)!!)
+        // Never persist `primaryCard` (which carries the ephemeral backup `linkingKey`) in stored UserWallets.
+        encoder.encodeString(
+            moshi.adapter(ScanResponse::class.java).toJson(value.copy(primaryCard = null))!!,
+        )
     }
 }

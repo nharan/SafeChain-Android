@@ -134,52 +134,29 @@ class DefaultWalletsRepositoryTest {
     inner class GetWalletsInfo {
 
         @Test
-        fun `should return converted wallets and update cache when updateCache is true`() = runTest {
+        fun `should return empty list without calling Tangem backend when updateCache is true`() = runTest {
             // Arrange
             val applicationId = "test_app_id"
-            val wallet1Id = "1234567890abcdef"
-            val wallet2Id = "fedcba0987654321"
-            val walletResponses = listOf(
-                WalletResponse(id = wallet1Id, notifyStatus = true),
-                WalletResponse(id = wallet2Id, notifyStatus = false),
-            )
-            coEvery { tangemTechApi.getWallets(applicationId) } returns ApiResponse.Success(walletResponses)
-            coEvery { preferencesDataStore.updateData(any()) } returns mockk()
 
             // Act
             val result = repository.getWalletsInfo(applicationId, updateCache = true)
 
             // Assert
-            assertThat(result).hasSize(2)
-            assertThat(result[0].walletId.stringValue).isEqualTo(wallet1Id)
-            assertThat(result[0].isNotificationsEnabled).isTrue()
-            assertThat(result[1].walletId.stringValue).isEqualTo(wallet2Id)
-            assertThat(result[1].isNotificationsEnabled).isFalse()
-
-            coVerify(exactly = 1) { tangemTechApi.getWallets(applicationId) }
-            coVerify(exactly = 2) { preferencesDataStore.updateData(any()) }
+            assertThat(result).isEmpty()
+            coVerify(exactly = 0) { tangemTechApi.getWallets(any()) }
         }
 
         @Test
-        fun `should return converted wallets without updating cache when updateCache is false`() = runTest {
+        fun `should return empty list without calling Tangem backend when updateCache is false`() = runTest {
             // Arrange
             val applicationId = "test_app_id"
-            val wallet1Id = "1234567890abcdef"
-            val walletResponses = listOf(
-                WalletResponse(id = wallet1Id, notifyStatus = true),
-            )
-            coEvery { tangemTechApi.getWallets(applicationId) } returns ApiResponse.Success(walletResponses)
 
             // Act
             val result = repository.getWalletsInfo(applicationId, updateCache = false)
 
             // Assert
-            assertThat(result).hasSize(1)
-            assertThat(result[0].walletId.stringValue).isEqualTo(wallet1Id)
-            assertThat(result[0].isNotificationsEnabled).isTrue()
-
-            coVerify(exactly = 1) { tangemTechApi.getWallets(applicationId) }
-            coVerify(exactly = 0) { preferencesDataStore.updateData(any()) }
+            assertThat(result).isEmpty()
+            coVerify(exactly = 0) { tangemTechApi.getWallets(any()) }
         }
     }
 
@@ -188,7 +165,7 @@ class DefaultWalletsRepositoryTest {
     inner class AssociateWallets {
 
         @Test
-        fun `should convert and send to associateApplicationIdWithWallets`() = runTest {
+        fun `should not send walletIds to associateApplicationIdWithWallets`() = runTest {
             // Arrange
             val applicationId = "test_app_id"
             val wallet1Id = "1234567890abcdef"
@@ -203,23 +180,12 @@ class DefaultWalletsRepositoryTest {
                 },
             )
 
-            coEvery {
-                tangemTechApi.associateApplicationIdWithWallets(eq(applicationId), any())
-            } returns ApiResponse.Success(Unit)
-
             // Act
             repository.associateWallets(applicationId, userWallets)
 
             // Assert
-            coVerify(exactly = 1) {
-                tangemTechApi.associateApplicationIdWithWallets(
-                    applicationId = eq(applicationId),
-                    body = match { body ->
-                        body.walletIds.size == 2 &&
-                            body.walletIds.contains(wallet1Id) &&
-                            body.walletIds.contains(wallet2Id)
-                    },
-                )
+            coVerify(exactly = 0) {
+                tangemTechApi.associateApplicationIdWithWallets(any(), any())
             }
         }
     }
@@ -229,14 +195,11 @@ class DefaultWalletsRepositoryTest {
     inner class ActivatePromoCode {
 
         @Test
-        fun `should return Right with status when API returns success`() = runTest {
+        fun `should return Left ActivationFailed locally without sending walletId or bitcoinAddress to API`() = runTest {
             // Arrange
             val walletId = UserWalletId("1234567890abcdef")
             val promoCode = "PROMO123"
             val address = "bc1qexampleaddress"
-            coEvery { tangemTechApi.activatePromoCode(any()) } returns ApiResponse.Success(
-                PromocodeActivationResponse(status = "activated"),
-            )
 
             // Act
             val result = repository.activatePromoCode(
@@ -246,61 +209,13 @@ class DefaultWalletsRepositoryTest {
             )
 
             // Assert
-            var right: String? = null
-            var left: ActivatePromoCodeError? = null
-            result.fold({ left = it }, { right = it })
-            assertThat(left).isNull()
-            assertThat(right).isEqualTo("activated")
+            var error: ActivatePromoCodeError? = null
+            result.fold({ error = it }, { })
+            assertThat(error).isEqualTo(ActivatePromoCodeError.ActivationFailed)
 
-            coVerify(exactly = 1) {
-                tangemTechApi.activatePromoCode(
-                    match<PromocodeActivationBody> { it.promoCode == promoCode && it.address == address },
-                )
+            coVerify(exactly = 0) {
+                tangemTechApi.activatePromoCode(any())
             }
-        }
-
-        @Test
-        fun `should return Left InvalidPromoCode when API returns NOT_FOUND`() = runTest {
-            // Arrange
-            val walletId = UserWalletId("1234567890abcdef")
-            @Suppress("UNCHECKED_CAST")
-            coEvery { tangemTechApi.activatePromoCode(any()) } returns ApiResponse.Error(
-                HttpException(code = HttpException.Code.NOT_FOUND, message = null, errorBody = null),
-            ) as ApiResponse<PromocodeActivationResponse>
-
-            // Act
-            val result = repository.activatePromoCode(
-                userWalletId = walletId,
-                promoCode = "PROMO",
-                bitcoinAddress = "addr",
-            )
-
-            // Assert
-            var error: ActivatePromoCodeError? = null
-            result.fold({ error = it }, { })
-            assertThat(error).isEqualTo(ActivatePromoCodeError.InvalidPromoCode)
-        }
-
-        @Test
-        fun `should return Left PromocodeAlreadyUsed when API returns CONFLICT`() = runTest {
-            // Arrange
-            val walletId = UserWalletId("1234567890abcdef")
-            @Suppress("UNCHECKED_CAST")
-            coEvery { tangemTechApi.activatePromoCode(any()) } returns ApiResponse.Error(
-                HttpException(code = HttpException.Code.CONFLICT, message = null, errorBody = null),
-            ) as ApiResponse<PromocodeActivationResponse>
-
-            // Act
-            val result = repository.activatePromoCode(
-                userWalletId = walletId,
-                promoCode = "PROMO",
-                bitcoinAddress = "addr",
-            )
-
-            // Assert
-            var error: ActivatePromoCodeError? = null
-            result.fold({ error = it }, { })
-            assertThat(error).isEqualTo(ActivatePromoCodeError.PromocodeAlreadyUsed)
         }
     }
 }

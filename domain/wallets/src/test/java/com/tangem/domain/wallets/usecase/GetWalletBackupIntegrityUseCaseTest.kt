@@ -65,6 +65,7 @@ internal class GetWalletBackupIntegrityUseCaseTest {
         val expected: WalletBackupIntegrity,
         val isCold: Boolean = true,
         val supportsBackup: Boolean = true,
+        val localBackupStatus: CardDTO.BackupStatus = CardDTO.BackupStatus.NoBackup,
         val isLocallyProblematic: Boolean = false,
         /** `null` means the backend must not be asked at all */
         val backendResponse: Either<WalletCardsBackupError, List<WalletCardBackup>>? = null,
@@ -75,7 +76,7 @@ internal class GetWalletBackupIntegrityUseCaseTest {
                 every { walletId } returns WALLET_ID
                 every { scanResponse } returns mockk {
                     every { card } returns mockk {
-                        every { backupStatus } returns if (supportsBackup) CardDTO.BackupStatus.NoBackup else null
+                        every { backupStatus } returns if (supportsBackup) localBackupStatus else null
                     }
                 }
             }
@@ -110,6 +111,27 @@ internal class GetWalletBackupIntegrityUseCaseTest {
         IntegrityModel(
             name = "no data on the backend recommends a rescan",
             backendResponse = emptyList<WalletCardBackup>().right(),
+            expected = WalletBackupIntegrity.RecommendedRescan,
+        ),
+        IntegrityModel(
+            name = "local active metadata without per-card verification records recommends a rescan",
+            localBackupStatus = CardDTO.BackupStatus.Active(cardCount = 1),
+            backendResponse = emptyList<WalletCardBackup>().right(),
+            expected = WalletBackupIntegrity.RecommendedRescan,
+        ),
+        IntegrityModel(
+            name = "local card linked metadata without per-card verification records requires a mandatory rescan",
+            localBackupStatus = CardDTO.BackupStatus.CardLinked(cardCount = 1),
+            backendResponse = emptyList<WalletCardBackup>().right(),
+            expected = WalletBackupIntegrity.MandatoryRescan,
+        ),
+        IntegrityModel(
+            name = "fewer verified active card records than local cardCount recommends a rescan",
+            localBackupStatus = CardDTO.BackupStatus.Active(cardCount = 2),
+            backendResponse = listOf(
+                card(CardBackupStatus.ACTIVE),
+                card(CardBackupStatus.ACTIVE),
+            ).right(),
             expected = WalletBackupIntegrity.RecommendedRescan,
         ),
         IntegrityModel(

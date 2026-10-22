@@ -1,141 +1,71 @@
 package com.tangem.data.wallets
 
 import arrow.core.Either
-import arrow.core.left
 import arrow.core.right
-import com.tangem.core.remote.response.ApiResponse
-import com.tangem.core.remote.response.ApiResponseError
-import com.tangem.core.remote.response.ApiResponseError.HttpException
 import com.tangem.data.wallets.converters.PendingWalletCardsBackupConverter
 import com.tangem.data.wallets.converters.WalletCardBackupConverter
 import com.tangem.data.wallets.converters.WalletCardDTOConverter
 import com.tangem.data.wallets.store.PendingWalletCardsBackup
 import com.tangem.data.wallets.store.PendingWalletCardsBackupStore
-import com.tangem.datasource.api.common.response.fold
-import com.tangem.datasource.api.common.response.isNetworkError
 import com.tangem.datasource.api.tangemTech.TangemTechApi
 import com.tangem.domain.models.wallet.UserWalletId
 import com.tangem.domain.wallets.models.backup.WalletCardBackup
 import com.tangem.domain.wallets.models.errors.WalletCardsBackupError
 import com.tangem.domain.wallets.repository.WalletCardsBackupRepository
 import com.tangem.utils.coroutines.CoroutineDispatcherProvider
-import com.tangem.utils.logging.TangemLogger
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.UUID
 
+/**
+ * Local-only storage for per-card backup verification records.
+ *
+ * Persists the verified state of each card (`PRIMARY`, `BACKUP_1`, `BACKUP_2`) locally in [PendingWalletCardsBackupStore]
+ * so [com.tangem.domain.wallets.usecase.GetWalletBackupIntegrityUseCase] can distinguish a cryptographically verified
+ * multi-card backup from an incomplete or unverified backup without transmitting card clusters or `usedSeed` to Tangem HQ.
+ */
+@Suppress("UnusedPrivateProperty")
 internal class DefaultWalletCardsBackupRepository(
     private val tangemTechApi: TangemTechApi,
     private val pendingStore: PendingWalletCardsBackupStore,
     private val dispatchers: CoroutineDispatcherProvider,
 ) : WalletCardsBackupRepository {
 
-    /**
-     * Onboarding fires each report from its own coroutine, so without this two reports would race and could
-     * reach the backend in either order — or, with a drain running, be sent twice. Every send goes through
-     * [drain], and only one drain runs at a time.
-     */
-    private val sendMutex = Mutex()
+    private val storeMutex = Mutex()
 
     override suspend fun saveWalletCards(
         userWalletId: UserWalletId,
         cards: List<WalletCardBackup>,
         usedSeed: Boolean,
     ): Either<WalletCardsBackupError, Unit> = withContext(dispatchers.io) {
-        pendingStore.clearAll()
+        storeMutex.withLock {
+            val dtoCards = cards.map(WalletCardDTOConverter::convert)
+            val entry = PendingWalletCardsBackup(
+                id = UUID.randomUUID().toString(),
+                walletId = userWalletId.stringValue,
+                cards = PendingWalletCardsBackupConverter.convert(dtoCards),
+                // Privacy hardening: never persist or transmit whether a seed phrase was used.
+                usedSeed = false,
+            )
+            pendingStore.putForWallet(entry)
+        }
         Unit.right()
     }
 
     override suspend fun sendPendingWalletCards(): Either<WalletCardsBackupError, Unit> = withContext(dispatchers.io) {
-        pendingStore.clearAll()
+        // Local-only mode: never drain or transmit card backup records to Tangem HQ.
         Unit.right()
     }
 
     override suspend fun getWalletCards(
         userWalletId: UserWalletId,
-    ): Either<WalletCardsBackupError, List<WalletCardBackup>> = emptyList<WalletCardBackup>().right()
-
-    /**
-     * Sends the queued reports oldest first — the order the backend records them in is the order the backup
-     * progressed in, so a report still waiting is never overtaken by a newer one.
-     */
-    private suspend fun drain(): Either<WalletCardsBackupError, Unit> = sendMutex.withLock {
-        for (pending in pendingStore.getAll()) {
-            when (val result = send(pending)) {
-                SendResult.Delivered -> Unit
-                // whatever stopped this one will stop the rest: leave them queued, in order, for the next
-                // attempt rather than hammering a backend that is down
-                is SendResult.Deferred -> return@withLock result.error.left()
-                is SendResult.Rejected -> {
-                    TangemLogger.e("Dropping rejected cards backup report wallet=${pending.walletId}: $result")
-                    pendingStore.remove(pending.id)
-                }
-            }
+    ): Either<WalletCardsBackupError, List<WalletCardBackup>> = withContext(dispatchers.io) {
+        storeMutex.withLock {
+            val stored = pendingStore.getForWallet(userWalletId.stringValue)
+                ?: return@withLock emptyList<WalletCardBackup>().right()
+            val body = PendingWalletCardsBackupConverter.convertBack(stored)
+            body.cards.map(WalletCardBackupConverter::convert).right()
         }
-
-        Unit.right()
-    }
-
-    private suspend fun send(pending: PendingWalletCardsBackup): SendResult {
-        // `fold` is not inline, and dequeuing on success suspends
-        val response = tangemTechApi.saveWalletCards(
-            walletId = pending.walletId,
-            body = PendingWalletCardsBackupConverter.convertBack(pending),
-        )
-
-        return when (response) {
-            is ApiResponse.Success -> {
-                pendingStore.remove(pending.id)
-                SendResult.Delivered
-            }
-            is ApiResponse.Error -> {
-                TangemLogger.e("saveWalletCards wallet=${pending.walletId} failed", response.cause)
-                response.cause.toSendResult()
-            }
-        }
-    }
-
-    private fun ApiResponseError.toSendResult(): SendResult = when (this) {
-        is ApiResponseError.NetworkException,
-        is ApiResponseError.TimeoutException,
-        -> SendResult.Deferred(WalletCardsBackupError.NoInternetConnection)
-        is HttpException -> if (isRetryable()) {
-            SendResult.Deferred(WalletCardsBackupError.Unexpected(cause = this))
-        } else {
-            SendResult.Rejected(WalletCardsBackupError.Unexpected(cause = this))
-        }
-        // the response could not be read at all, which says nothing about whether the report was accepted —
-        // dropping it here would lose a report the backend may never have seen
-        is ApiResponseError.UnknownException -> SendResult.Deferred(WalletCardsBackupError.Unexpected(cause = this))
-    }
-
-    /**
-     * Whether sending the same report again could succeed. A backend that is overloaded, restarting or behind
-     * a failing gateway will accept the very same bytes once it recovers; one that refuses them outright
-     * (malformed body, unknown wallet, a card missing from the attestation database) never will.
-     */
-    private fun HttpException.isRetryable(): Boolean = isServerError() ||
-        code == HttpException.Code.TOO_MANY_REQUESTS ||
-        code == HttpException.Code.REQUEST_TIMEOUT
-
-    private fun ApiResponseError.toDomainError(): WalletCardsBackupError = when (this) {
-        is ApiResponseError.NetworkException,
-        is ApiResponseError.TimeoutException,
-        -> WalletCardsBackupError.NoInternetConnection
-        else -> WalletCardsBackupError.Unexpected(cause = this)
-    }
-
-    /** Outcome of sending one queued report, and what the queue should do with it */
-    private sealed interface SendResult {
-
-        /** The backend accepted the report; the entry is gone from the queue */
-        data object Delivered : SendResult
-
-        /** Sending failed for a reason that may pass: the entry stays queued and the drain stops */
-        data class Deferred(val error: WalletCardsBackupError) : SendResult
-
-        /** The backend refused the report itself: the entry is dropped so it cannot wedge the queue */
-        data class Rejected(val error: WalletCardsBackupError) : SendResult
     }
 }

@@ -238,6 +238,29 @@ internal class BlockchainProvidersResponseMergerTest {
         Truth.assertThat(actual).isEqualTo(remoteResponse + expectedNear)
     }
 
+    @Test
+    fun test_if_non_near_blockchains_preserve_remote_priority_order_and_append_local_public_fallbacks() {
+        val localTon = "the-open-network" to listOf(
+            ProviderModel.Public("https://toncenter.com/api/v2/"),
+        )
+        val remoteTon = "the-open-network" to listOf(
+            ProviderModel.Private(name = "ton"),
+            ProviderModel.Private(name = "nownodes"),
+        )
+
+        val actual = blockchainProvidersResponseMerger.merge(
+            local = localResponse + localTon,
+            remote = remoteResponse + remoteTon,
+        )
+
+        val expectedTon = "the-open-network" to listOf(
+            ProviderModel.Private(name = "ton"),
+            ProviderModel.Private(name = "nownodes"),
+            ProviderModel.Public("https://toncenter.com/api/v2/"),
+        )
+        Truth.assertThat(actual).isEqualTo(remoteResponse + expectedTon)
+    }
+
     companion object {
 
         val localResponse: BlockchainProvidersResponse = mapOf(

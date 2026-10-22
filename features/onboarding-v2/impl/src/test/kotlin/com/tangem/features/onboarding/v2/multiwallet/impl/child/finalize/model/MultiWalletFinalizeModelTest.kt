@@ -56,7 +56,7 @@ import java.lang.ref.WeakReference
 @OptIn(ExperimentalCoroutinesApi::class)
 internal class MultiWalletFinalizeModelTest {
 
-    private val backupServiceHolder: BackupServiceHolder = mockk()
+    private val backupServiceHolder: BackupServiceHolder = mockk(relaxUnitFun = true)
     private val backupService: BackupService = mockk()
     private val backupServiceWeakRef: WeakReference<BackupService> = WeakReference(backupService)
     private val tangemSdkManager: TangemSdkManager = mockk(relaxUnitFun = true)

@@ -277,6 +277,17 @@ internal class MultiWalletSeedPhraseModel @Inject constructor(
 
                     cardRepository.startCardActivation(cardId = result.data.card.cardId)
 
+                    walletCardsBackupReporter.report(
+                        scanResponse = updatedScanResponse,
+                        cards = listOf(
+                            CardBackupConverter.convert(
+                                card = updatedScanResponse.card,
+                                role = WalletCardBackup.Role.PRIMARY,
+                            ),
+                        ),
+                        usedSeed = false,
+                    )
+
                     onDone.emit(Unit)
                 }
                 is CompletionResult.Failure -> {

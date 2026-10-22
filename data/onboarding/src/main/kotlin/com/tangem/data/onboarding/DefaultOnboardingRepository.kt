@@ -37,13 +37,16 @@ internal class DefaultOnboardingRepository(
     override suspend fun getUnfinishedFinalizeOnboarding(): ScanResponse? {
         return appPreferencesStore
             .getObjectSyncOrNull<ScanResponse>(storePreferencesKeys.onboardingFinalizeScanResponseKey)
+            ?.copy(primaryCard = null)
     }
 
     override suspend fun saveUnfinishedFinalizeOnboarding(scanResponse: ScanResponse) {
+        // Strip `primaryCard` (which contains the ephemeral `linkingKey` from `StartPrimaryCardLinkingTask`)
+        // so backup linking material is never written to persistent preferences.
         appPreferencesStore
             .storeObject<ScanResponse>(
                 storePreferencesKeys.onboardingFinalizeScanResponseKey,
-                scanResponse,
+                scanResponse.copy(primaryCard = null),
             )
     }
 

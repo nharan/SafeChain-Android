@@ -366,7 +366,8 @@ internal class MultiWalletFinalizeModel @Inject constructor(
                     val userWallet = getUserWalletsUseCase.invokeSync()
                         .firstOrNull { userWallet ->
                             userWallet is UserWallet.Cold &&
-                                userWallet.scanResponse.primaryCard?.cardId == scanResponse.primaryCard?.cardId
+                                (userWallet.scanResponse.primaryCard?.cardId ?: userWallet.scanResponse.card.cardId) ==
+                                (scanResponse.primaryCard?.cardId ?: scanResponse.card.cardId)
                         }
                         ?: userWalletCreated
 
@@ -439,8 +440,35 @@ internal class MultiWalletFinalizeModel @Inject constructor(
         }
     }
 
+    /**
+     * Records every card of the wallet locally after one of them has been finalized: the finalized ones with the
+     * status and curves the card itself returned, and the remaining backup cards as still not backed up.
+     */
     private fun reportFinalizedCard(role: WalletCardBackup.Role, card: CardDTO) {
-        // Telemetry stripped: do not report finalized card backup or usedSeed status
+        finalizedCards[role] = card
+
+        val scanResponse = multiWalletState.value.currentScanResponse
+        val primaryCard = finalizedCards[WalletCardBackup.Role.PRIMARY] ?: scanResponse.card
+
+        val cards = buildList {
+            add(CardBackupConverter.convert(card = primaryCard, role = WalletCardBackup.Role.PRIMARY))
+
+            WalletCardsBackupReporter.BACKUP_ROLES.forEachIndexed { index, backupRole ->
+                val finalizedCard = finalizedCards[backupRole]
+
+                if (finalizedCard != null) {
+                    add(CardBackupConverter.convert(card = finalizedCard, role = backupRole))
+                } else {
+                    notFinalizedBackupCard(index = index, role = backupRole)?.let(::add)
+                }
+            }
+        }
+
+        walletCardsBackupReporter.report(
+            scanResponse = scanResponse.copy(card = primaryCard),
+            cards = cards,
+            usedSeed = false,
+        )
     }
 
     /**
@@ -540,6 +568,7 @@ internal class MultiWalletFinalizeModel @Inject constructor(
 
         override fun onCancel() {
             modelScope.launch {
+                backupServiceHolder.clearActiveSession()
                 onEvent.emit(MultiWalletFinalizeComponent.Event.ExitFromFlow)
             }
         }

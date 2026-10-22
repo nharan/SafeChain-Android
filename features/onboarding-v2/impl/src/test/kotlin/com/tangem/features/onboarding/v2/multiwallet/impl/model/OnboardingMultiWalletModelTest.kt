@@ -48,7 +48,7 @@ internal class OnboardingMultiWalletModelTest {
 
     private val analyticsHandler: AnalyticsEventHandler = mockk(relaxUnitFun = true)
     private val router: Router = mockk(relaxUnitFun = true)
-    private val backupServiceHolder: BackupServiceHolder = mockk()
+    private val backupServiceHolder: BackupServiceHolder = mockk(relaxUnitFun = true)
     private val backupServiceWeakRef: WeakReference<BackupService> = WeakReference(null)
     private val onboardingRepository: OnboardingRepository = mockk(relaxUnitFun = true)
     private val getCardImageUseCase: GetCardImageUseCase = mockk()
@@ -369,6 +369,7 @@ internal class OnboardingMultiWalletModelTest {
         advanceUntilIdle()
 
         coVerify { onboardingRepository.clearUnfinishedFinalizeOnboarding() }
+        verify { backupServiceHolder.clearActiveSession() }
         verify { router.pop(onComplete = any()) }
         verify(exactly = 0) { router.popTo(route = any(), onComplete = any()) }
         verify(exactly = 0) { router.replaceAll(routes = anyVararg(), onComplete = any()) }
@@ -392,6 +393,7 @@ internal class OnboardingMultiWalletModelTest {
         advanceUntilIdle()
 
         coVerify { onboardingRepository.clearUnfinishedFinalizeOnboarding() }
+        verify { backupServiceHolder.clearActiveSession() }
         verify { router.popTo(route = AppRoute.Wallet, onComplete = any()) }
         verify(exactly = 0) { router.pop(onComplete = any()) }
         verify(exactly = 0) { router.replaceAll(routes = anyVararg(), onComplete = any()) }
@@ -416,6 +418,7 @@ internal class OnboardingMultiWalletModelTest {
             advanceUntilIdle()
 
             coVerify { onboardingRepository.clearUnfinishedFinalizeOnboarding() }
+            verify { backupServiceHolder.clearActiveSession() }
             verify { router.replaceAll(routes = arrayOf(AppRoute.Wallet), onComplete = any()) }
             verify(exactly = 0) { router.pop(onComplete = any()) }
             verify(exactly = 0) { router.popTo(route = any(), onComplete = any()) }

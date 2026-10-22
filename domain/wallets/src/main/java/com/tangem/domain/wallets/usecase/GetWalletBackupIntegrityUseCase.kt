@@ -44,17 +44,29 @@ class GetWalletBackupIntegrityUseCase(
     ): WalletBackupIntegrity {
         if (cards.isEmpty()) {
             return when (localBackupStatus) {
-                is CardDTO.BackupStatus.Active -> WalletBackupIntegrity.FullyActivated
                 is CardDTO.BackupStatus.CardLinked -> WalletBackupIntegrity.MandatoryRescan
-                CardDTO.BackupStatus.NoBackup -> WalletBackupIntegrity.RecommendedRescan
+                is CardDTO.BackupStatus.Active,
+                CardDTO.BackupStatus.NoBackup,
+                -> WalletBackupIntegrity.RecommendedRescan
             }
         }
 
         val statuses = cards.map { it.backupStatus }
+        val expectedMinCards = when (localBackupStatus) {
+            is CardDTO.BackupStatus.Active -> 1 + localBackupStatus.cardCount
+            is CardDTO.BackupStatus.CardLinked -> 1 + localBackupStatus.cardCount
+            CardDTO.BackupStatus.NoBackup -> 1
+        }
 
         return when {
             statuses.contains(CardBackupStatus.CARD_LINKED) -> WalletBackupIntegrity.MandatoryRescan
-            statuses.all { it == CardBackupStatus.ACTIVE } -> WalletBackupIntegrity.FullyActivated
+            statuses.all { it == CardBackupStatus.ACTIVE } -> {
+                if (cards.size >= expectedMinCards) {
+                    WalletBackupIntegrity.FullyActivated
+                } else {
+                    WalletBackupIntegrity.RecommendedRescan
+                }
+            }
             statuses.contains(CardBackupStatus.ACTIVE) -> WalletBackupIntegrity.MandatoryRescan
             else -> WalletBackupIntegrity.RecommendedRescan
         }

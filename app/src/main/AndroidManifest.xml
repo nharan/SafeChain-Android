@@ -14,6 +14,27 @@
         android:name="com.google.android.gms.permission.AD_ID"
         tools:node="remove" />
     <uses-permission
+        android:name="android.permission.ACCESS_ADSERVICES_ATTRIBUTION"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.ACCESS_ADSERVICES_AD_ID"
+        tools:node="remove" />
+    <uses-permission
+        android:name="com.google.android.finsky.permission.BIND_GET_INSTALL_REFERRER_SERVICE"
+        tools:node="remove" />
+    <uses-permission
+        android:name="com.google.android.c2dm.permission.RECEIVE"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.POST_NOTIFICATIONS"
+        tools:node="remove" />
+    <uses-permission
+        android:name="com.samsung.android.mapsagent.permission.READ_APP_INFO"
+        tools:node="remove" />
+    <uses-permission
+        android:name="com.huawei.appmarket.service.commondata.permission.GET_COMMON_DATA"
+        tools:node="remove" />
+    <uses-permission
         android:name="android.permission.ACCESS_FINE_LOCATION"
         tools:node="remove" />
     <uses-permission
@@ -515,6 +536,44 @@
             android:name="com.surveysparrow.ss_android_sdk.SsSurveyActivity"
             android:exported="false"
             tools:replace="android:exported" />
+
+        <!-- Strip transitive telemetry, push, and measurement components from the merged manifest -->
+        <activity
+            android:name="io.customer.messagingpush.activity.NotificationClickReceiverActivity"
+            tools:node="remove" />
+        <service
+            android:name="io.customer.messagingpush.CustomerIOFirebaseMessagingService"
+            tools:node="remove" />
+        <receiver
+            android:name="io.customer.messagingpush.CustomerIOCloudMessagingReceiver"
+            tools:node="remove" />
+        <receiver
+            android:name="com.google.firebase.iid.FirebaseInstanceIdReceiver"
+            tools:node="remove" />
+        <service
+            android:name="com.google.firebase.messaging.FirebaseMessagingService"
+            tools:node="remove" />
+        <service
+            android:name="com.google.firebase.sessions.SessionLifecycleService"
+            tools:node="remove" />
+        <receiver
+            android:name="com.google.android.gms.measurement.AppMeasurementReceiver"
+            tools:node="remove" />
+        <service
+            android:name="com.google.android.gms.measurement.AppMeasurementService"
+            tools:node="remove" />
+        <service
+            android:name="com.google.android.gms.measurement.AppMeasurementJobService"
+            tools:node="remove" />
+        <service
+            android:name="com.google.android.datatransport.runtime.backends.TransportBackendDiscovery"
+            tools:node="remove" />
+        <service
+            android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.JobInfoSchedulerService"
+            tools:node="remove" />
+        <receiver
+            android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.AlarmManagerSchedulerBroadcastReceiver"
+            tools:node="remove" />
     </application>
     <queries>
         <!-- Needed from Android 11 to open Google Wallet for payment with Visa card -->
