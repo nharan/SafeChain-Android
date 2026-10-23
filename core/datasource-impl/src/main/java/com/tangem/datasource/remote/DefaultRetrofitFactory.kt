@@ -26,6 +26,7 @@ import com.tangem.datasource.remote.interceptors.HqTransparencyInterceptor
 import com.tangem.datasource.remote.interceptors.NetworkLogsSaveInterceptor
 import com.tangem.datasource.remote.interceptors.PseudonymSecretStore
 import com.tangem.datasource.remote.interceptors.SwitchEnvironmentInterceptor
+import com.tangem.datasource.remote.interceptors.TangemRequestPolicyNetworkInterceptor
 import com.tangem.datasource.remote.interceptors.WalletIdPrivacyInterceptor
 import com.tangem.datasource.remote.interceptors.WireMockRedirectInterceptor
 import com.tangem.datasource.remote.interceptors.createNetworkLoggingInterceptor
@@ -124,6 +125,7 @@ internal class DefaultRetrofitFactory @Inject constructor(
                     }
                     .applyTimeouts(timeouts = timeouts)
                     .addInterceptor(walletIdPrivacyInterceptor)
+                    .addNetworkInterceptor(TangemRequestPolicyNetworkInterceptor)
                     .addInterceptor(HqTransparencyInterceptor)
                     .let {
                         if (loggable) it.addLoggers(apiConfigId = apiConfigId, context = context) else it

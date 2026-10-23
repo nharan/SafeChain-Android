@@ -43,17 +43,34 @@ private data class CreateWalletResponse(
     )
 }
 
+/**
+ * @param expectedCardPublicKey public key of the card that was scanned and manufacturer-verified. Hardened build: the
+ * card in this session is re-attested and must present that same key before any wallet is created or seed imported.
+ */
 class CreateProductWalletTask(
     private val cardTypesResolver: CardTypesResolver,
     private val mnemonic: Mnemonic? = null,
     private val passphrase: String? = null,
     private val shouldReset: Boolean,
     private val derivationsHelper: DerivationsHelper,
+    private val expectedCardPublicKey: ByteArray,
 ) : CardSessionRunnable<CreateProductWalletTaskResponse> {
 
     override val allowsRequestAccessCodeFromRepository: Boolean = false
 
     override fun run(
+        session: CardSession,
+        callback: (result: CompletionResult<CreateProductWalletTaskResponse>) -> Unit,
+    ) {
+        VerifyScannedCardTask(expectedCardPublicKey).run(session) { verification ->
+            when (verification) {
+                is CompletionResult.Success -> proceedWithCard(session, callback)
+                is CompletionResult.Failure -> callback(CompletionResult.Failure(verification.error))
+            }
+        }
+    }
+
+    private fun proceedWithCard(
         session: CardSession,
         callback: (result: CompletionResult<CreateProductWalletTaskResponse>) -> Unit,
     ) {

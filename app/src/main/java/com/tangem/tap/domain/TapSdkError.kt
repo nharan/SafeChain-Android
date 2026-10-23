@@ -22,4 +22,10 @@ sealed class TapSdkError(override val messageResId: Int?) : TangemError(code = 5
             "This card failed verification as a genuine Tangem card and will not be used."
         }
     }
+
+    /** Hardened build: the card tapped for a key operation is not the card that was scanned and verified */
+    class CardChangedSinceScan : TapSdkError(messageResId = null) {
+        override var customMessage: String =
+            "This is not the card that was scanned. Tap the same card you started with."
+    }
 }
