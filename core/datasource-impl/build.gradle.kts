@@ -109,5 +109,6 @@ dependencies {
 
     // region Tests
     testImplementation(projects.test.core)
+    testImplementation(deps.test.mockwebserver)
     // endregion
 }

@@ -21,6 +21,10 @@
 | N-11 Raw walletId in other headers | **Fixed.** Polymarket's `wallet-id` (to `api.tangem.org`) and Yield's `userWalletId` were sent raw; the interceptor only rewrote `user-id`. Every header whose name, ignoring case and punctuation, is `userid` or contains `walletid` is now pseudonymized. Polymarket/Yield records kept server-side under the old walletId no longer match. | follow-up commit |
 | N-12 Redirects bypass the policy | **Fixed.** The policy ran only as an application interceptor (once per call). `TangemRequestPolicyNetworkInterceptor` re-checks every request OkHttp actually sends, including each redirect hop. | follow-up commit |
 | N-13 Identifier spellings, host-wide service allowlist | **Fixed.** Any query parameter matching the same identifier rule (`userWalletId`, `user_wallet_id`, `userId`, …) is refused on Tangem hosts, and Express, Yield and Gasless are now limited to their reviewed method + path pairs instead of the whole host. | follow-up commit |
+| K-12 Attestation re-check paused the NFC session on a cache miss | **Fixed.** Confirmed in `AttestationTask.runOnlineAttestation` bytecode: it calls `session.pause()` unless `shouldKeepSessionOpened`. `VerifyScannedCardTask` now sets it, so wallet creation can continue in the same session after an online check. Not tested on a device. | follow-up commit |
+| N-14 Cross-origin redirects | **Fixed.** The policy allowed any non-Tangem destination, so a redirect from an allowed Tangem endpoint could carry `api-key`/`session-id`/pseudonym headers and a 307/308 body elsewhere. Every request is now tagged with its origin (scheme, host, port) and the network interceptor refuses any hop to a different origin. Covered by a real two-server `MockWebServer` test (`RedirectOriginBindingTest`). | follow-up commit |
+| N-15 Polymarket identity | **Disabled.** Its backend identifies users by the raw walletId in the deploy body and the `walletId` lookup query; header pseudonymization can't fix that. The feature is already off in production (`AND_16204_POLYMARKET_ENABLED` undefined), and `/api/predictions` is now refused by the policy. | follow-up commit |
+| N-16 Cross-service correlation | **Fixed.** Pseudonyms are now HMAC-SHA256(secret, host ‖ NUL ‖ walletId), so Express, Yield and Gasless each see a different stable value. Express history recorded under the previous pseudonym no longer matches. | follow-up commit |
 | N-6 – N-10 | Open. | — |
 | R-1 `wss://` providers rejected | Open. | — |
 
@@ -34,7 +38,7 @@
 | Express / Onramp | From, to and refund addresses, amounts, transaction hashes | Only when the user swaps or buys |
 | Yield / Gasless / StakeKit / P2P | Addresses and transaction data of the operation; staking balances are queried automatically | Yield/gasless on user action; staking balance on refresh |
 | Blockchain RPC providers | Every address the app tracks | Automatically |
-| Polymarket, Hedera account service | That feature's addresses / network public key; Polymarket also gets a per-wallet pseudonym | Only when the user uses it |
+| Hedera account service | That network's public key | Only when the user creates a Hedera account |
 | Yield (`yield.tangem.org`) | Per-wallet pseudonym, token and user addresses | On yield activate/deactivate and incentive views |
 
 Not established by any of this: that the closed-source card firmware matches an audited build, or what the app sends

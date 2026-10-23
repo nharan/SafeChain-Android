@@ -43,7 +43,9 @@ internal object ManufacturerAttestationGate {
 internal class VerifyScannedCardTask(
     private val expectedCardPublicKey: ByteArray,
     private val createAttestation: (SecureStorage) -> CardSessionRunnable<Attestation> = { secureStorage ->
-        AttestationTask(AttestationTask.Mode.Normal, secureStorage)
+        // without it, a cache miss pauses the NFC session for the online check and the wallet creation that
+        // follows in this same session could not reach the card
+        AttestationTask(AttestationTask.Mode.Normal, secureStorage).apply { shouldKeepSessionOpened = true }
     },
 ) : CardSessionRunnable<Unit> {
 

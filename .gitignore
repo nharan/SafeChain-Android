@@ -4,6 +4,7 @@
 **/build/
 /buildSrc
 *.apk
+*.hprof
 
 # Local configuration file (sdk path, etc)
 local.properties

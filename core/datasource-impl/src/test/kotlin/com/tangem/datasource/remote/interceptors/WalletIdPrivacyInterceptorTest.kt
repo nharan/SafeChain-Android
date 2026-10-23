@@ -103,7 +103,9 @@ internal class WalletIdPrivacyInterceptorTest {
             RequestModel(url = "$GATEWAY/v1/networks/providers", isBlocked = false),
             RequestModel(url = "$GATEWAY/v1/news/trending", isBlocked = false),
             RequestModel(url = "$GATEWAY/v1/user-network-account", method = "POST", isBlocked = false),
-            RequestModel(url = "$GATEWAY/api/predictions/v1/events", isBlocked = false),
+            // Polymarket identifies users by raw walletId in bodies and queries, so it is refused entirely
+            RequestModel(url = "$GATEWAY/api/predictions/v1/events", isBlocked = true),
+            RequestModel(url = "$GATEWAY/api/predictions/v1/wallet/deploy", method = "POST", isBlocked = true),
             RequestModel(url = "$EXPRESS/v1/assets", method = "POST", isBlocked = false),
             RequestModel(url = "$EXPRESS/v1/exchange-quote?amount=1", isBlocked = false),
             RequestModel(url = "$EXPRESS/v1/history/delta/onramp", isBlocked = false),
@@ -215,21 +217,33 @@ internal class WalletIdPrivacyInterceptorTest {
         }
 
         @Test
-        fun `GIVEN no identifier header WHEN intercept THEN request passes unchanged`() {
+        fun `GIVEN same wallet on two services WHEN intercept THEN pseudonyms differ`() {
+            // Act
+            val express = proceededHeader("user-id", WALLET_ID, url = "$EXPRESS/v1/providers")
+            val yield = proceededHeader("user-id", WALLET_ID, url = "$YIELD/api/v1/yield/markets")
+
+            // Assert
+            assertThat(express).isNotEqualTo(yield)
+        }
+
+        @Test
+        fun `GIVEN no identifier header WHEN intercept THEN only the origin tag is added`() {
             // Arrange
-            val request = Request.Builder().url("$EXPRESS/v1/providers").build()
+            val request = Request.Builder().url("$EXPRESS/v1/providers").header("api-key", "key").build()
             every { chain.request() } returns request
 
             // Act
             interceptor.intercept(chain)
 
             // Assert
-            assertThat(proceeded.captured).isSameInstanceAs(request)
+            assertThat(proceeded.captured.headers).isEqualTo(request.headers)
+            assertThat(proceeded.captured.tag(RequestOrigin::class.java))
+                .isEqualTo(RequestOrigin(scheme = "https", host = "express.tangem.com", port = 443))
         }
 
-        private fun proceededHeader(name: String, value: String): String? {
+        private fun proceededHeader(name: String, value: String, url: String = "$EXPRESS/v1/providers"): String? {
             every { chain.request() } returns Request.Builder()
-                .url("$GATEWAY/api/predictions/v1/wallet")
+                .url(url)
                 .header(name, value)
                 .build()
             interceptor.intercept(chain)

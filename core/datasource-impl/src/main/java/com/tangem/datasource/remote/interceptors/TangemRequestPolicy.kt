@@ -10,8 +10,7 @@ import java.util.Locale
  *
  * Request bodies can't be inspected without buffering them, so only operations that were reviewed are allowed, as
  * an explicit method + path per host:
- * - `api.tangem.org` — public catalogue/price/market data GETs, plus two user-initiated operations (Hedera account
- *   creation, Polymarket).
+ * - `api.tangem.org` — public catalogue/price/market data GETs, plus user-initiated Hedera account creation.
  * - `express.tangem.com` (swap, onramp), `yield.tangem.org`, `gasless.tangem.org` — the operations of those services,
  *   which the user invokes and which see the addresses and transaction data of those operations by necessity.
  * Every other Tangem host and endpoint is refused, as is any Tangem request whose query carries a wallet identifier.
@@ -64,9 +63,8 @@ internal object TangemRequestPolicy {
             Rule("GET", "/v1/news(/.*)?"),
             // user-initiated: creating a Hedera account sends that network's public key
             Rule("POST", "/v1/user-network-account"),
-            // user-initiated: the Polymarket feature, which needs its own wallet addresses
-            Rule("GET", "/api/predictions/v1/.+"),
-            Rule("POST", "/api/predictions/v1/.+"),
+            // Polymarket (`/api/predictions`) is deliberately absent: its backend identifies the user by the raw
+            // walletId in request bodies and queries, so it is refused until it has a privacy-preserving contract
         ),
         "express.tangem.com" to listOf(
             Rule("POST", "/v1/(assets|pairs|exchange-sent|onramp-pairs)"),
