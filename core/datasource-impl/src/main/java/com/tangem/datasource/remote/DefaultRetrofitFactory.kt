@@ -24,7 +24,9 @@ import com.tangem.datasource.local.logs.AppLogsStore
 import com.tangem.datasource.local.logs.SensitiveUrlMasker
 import com.tangem.datasource.remote.interceptors.HqTransparencyInterceptor
 import com.tangem.datasource.remote.interceptors.NetworkLogsSaveInterceptor
+import com.tangem.datasource.remote.interceptors.PseudonymSecretStore
 import com.tangem.datasource.remote.interceptors.SwitchEnvironmentInterceptor
+import com.tangem.datasource.remote.interceptors.WalletIdPrivacyInterceptor
 import com.tangem.datasource.remote.interceptors.WireMockRedirectInterceptor
 import com.tangem.datasource.remote.interceptors.createNetworkLoggingInterceptor
 import com.tangem.utils.JsonStringValuesExtractor
@@ -69,6 +71,10 @@ internal class DefaultRetrofitFactory @Inject constructor(
 ) : RetrofitFactory {
 
     private val configsBaseUrls: Map<ApiConfig.ID, Set<String>> = getConfigsBaseUrls()
+
+    private val walletIdPrivacyInterceptor = WalletIdPrivacyInterceptor(
+        pseudonymSecretProvider = { PseudonymSecretStore.getOrCreate(context) },
+    )
 
     private val sensitiveUrlMasker: SensitiveUrlMasker by lazy {
         val json = Json.encodeToJsonElement(EnvironmentConfig.serializer(), environmentConfig)
@@ -117,6 +123,7 @@ internal class DefaultRetrofitFactory @Inject constructor(
                         if (applyTimeoutAnnotations) it.applyTimeoutAnnotations() else it
                     }
                     .applyTimeouts(timeouts = timeouts)
+                    .addInterceptor(walletIdPrivacyInterceptor)
                     .addInterceptor(HqTransparencyInterceptor)
                     .let {
                         if (loggable) it.addLoggers(apiConfigId = apiConfigId, context = context) else it

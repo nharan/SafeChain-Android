@@ -1,5 +1,28 @@
 # Security Audit — `cbf3a7772a6..f9cd0f14dd1` (2026-10-23)
 
+> **Pre-fix assessment.** §1–§4 below describe the code at `f9cd0f14dd1`, before any remediation. The current state
+> of every finding is in the status table that follows; it supersedes the "Fix" columns further down.
+
+## Current status
+
+| Finding | Status | Where |
+|---|---|---|
+| K-1 Hot-wallet cloud backup | **Fixed.** Toggles off, *and* refused at the upload layer: `DefaultCloudBackupRepository.uploadBackup` returns an error without encrypting or contacting Drive, and `CreateCloudBackupModel` refuses before the seed is exported. Restore/list/delete still work so old backups can be removed. | `260bebcdb1c`, follow-up commit |
+| K-2 Device-to-device transfer | **Fixed.** All domains excluded for cloud backup and device transfer. | `260bebcdb1c` |
+| K-3 – K-4 `FLAG_SECURE` gaps | Open. | — |
+| K-5 Airplane guardrail fails open | **Partly fixed.** A context, ConnectivityManager or interface read that fails now blocks the action (`isStatusUnknown`); VPN transport added. Still: tap-time check only, not applied to hot-wallet flows, context registered by the onboarding component rather than at app start (the `ActivityThread` fallback covers it). | follow-up commit |
+| K-6 – K-10 | Open (Low). | — |
+| N-1 Card headers on every Tangem request | **Fixed.** Removed from TangemTech and YieldSupply; the shared provider now returns no headers. | `260bebcdb1c` |
+| N-2 Card attestation | **Corrected.** `260bebcdb1c` switched to `Mode.Offline`, which was wrong: Offline only checks a challenge signed by the key the card itself reports and does **no** manufacturer verification, so a counterfeit card passes. Reverted to `Mode.Normal`. Bytecode check (`CommonOnlineAttestationService.getAttestationData`): the manufacturer-signed response is cached per card public key and re-verified locally on every scan, so Tangem's server sees `cardId` + `cardPublicKey` **once per card per install**, not on every scan as this report originally claimed. | follow-up commit |
+| N-3 FCM/HMS token at launch | **Fixed** (token providers return empty; Messaging, Sessions and Push Kit auto-init off). `FirebaseInitProvider` itself remains. | `260bebcdb1c` |
+| N-4 walletId on automatic Tangem calls | **Fixed centrally.** `WalletIdPrivacyInterceptor` (on every `DefaultRetrofitFactory` client) refuses requests to Tangem hosts on walletId-keyed paths (notification-preferences, referral, banner/displays, promotion, address-books, `v1`/`v2` wallets, user-wallets, seedphrase-notification, user-tokens) or with a walletId query parameter. The address book is now local-only. | follow-up commit |
+| N-5 Express `user-id` = walletId | **Fixed.** The interceptor replaces `user-id` with HMAC-SHA256(on-device random secret, walletId): stable per wallet, unlinkable to the walletId or across wallets. Express history recorded under the old walletId is no longer retrievable. | follow-up commit |
+| N-6 – N-10 | Open. | — |
+| R-1 `wss://` providers rejected | Open. | — |
+
+Not established by any of this: that the closed-source card firmware matches an audited build, or what the app sends
+on a real device — a network capture while scanning existing cards is still to be done.
+
 Scope: every commit from `cbf3a7772a6` to `HEAD` (6 commits, 64 files), plus the code those commits did not
 touch but that still affects key safety and privacy. Method: full diff review, Card SDK bytecode inspection
 (`tangem-sdk-kotlin` `releases-6.4-672`), merged-manifest inspection, codebase-wide grep for remaining
@@ -54,7 +77,7 @@ exposure; **Low** = defence-in-depth.
 | # | Sev | Finding | Location | Fix |
 |---|---|---|---|---|
 | N-1 | **High** | **`card_id` + `card_public_key` headers on every `api.tangem.org` call** (quotes, coins, geo, markets, providers, …) and on every `yield.tangem.org` call. This alone links IP + card to every app session. | `store/datasource/.../config/TangemTech.kt:48`, `grow/datasource/.../config/YieldSupply.kt:73`, `AuthRequestHeaders.kt:14-15` | Remove `cardAuthHeader` from both configs. |
-| N-2 | **High** | **Online card attestation** on every scan (the F-08 finding above, still open). | `DefaultCardSdkProvider.kt:226` | `attestationMode = AttestationTask.Mode.Offline`. Then check that backup-card linking still works (the issuer certificate may need a one-off online fetch, which the backup screen already prompts for). |
+| N-2 | ~~High~~ Low | **Online card attestation** (the F-08 finding above). *Corrected — see status table:* the response is cached per card, so this is a once-per-card contact, and it is the only manufacturer check of the card. | `DefaultCardSdkProvider.kt:226` | ~~`Mode.Offline`~~ Keep `Mode.Normal`; Offline removes counterfeit-card detection. |
 | N-3 | **High** | **FCM token fetched on every launch.** The stubbed `createApplicationId` returns success, so `SendPushTokenUseCase` still calls `FirebaseMessaging.getInstance().token`. That creates a Firebase Installation and an FCM registration with Google. The Huawei flavor calls the same method. | `MainViewModel.kt:106,402-416`, `app/src/google/.../FirebasePushNotificationsTokenProvider.kt:12` | Stub the token provider to return nothing. Set `firebase_messaging_auto_init_enabled=false`. Remove `FirebaseInitProvider` via `tools:node="remove"`, or drop the Firebase dependencies. |
 | N-4 | **High** | **walletId sent automatically** by many unhardened paths: `GET notification-preferences/{walletId}` on the main screen; `v1/banner/displays?walletId=` for all wallets; `v1/referral/{walletId}`; `/v2/promotion?walletId=` and yield-boost status; `POST v1/address-books/sync` with all walletIds; `wallets/{walletId}/joint-accounts`. | `WalletModel.kt:178,223,918`, `PromoBannersBlockModel.kt:124`, `ReferralBlockModel.kt:57`, `ShouldShowYieldBoostMainBannerUseCase.kt:25`, `DefaultAddressBookRepository.kt:144`, `AccountListCryptoCurrenciesFetcher.kt:48` | Stub each repository locally, the same way `DefaultWalletsRepository` was stubbed. |
 | N-5 | **High** | **Express `user-id` = walletId** on `getAssets` during every balance refresh, plus express/onramp history deltas. | `DefaultExpressServiceFetcher.kt:72`, `TangemExpressApi.kt`, `OnrampApi.kt`, `DefaultExpressHistoryRepository.kt` | Send a random per-install (or per-request) id instead of the walletId; fetch assets only when the user opens swap. |

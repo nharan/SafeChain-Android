@@ -268,6 +268,12 @@ internal class CreateCloudBackupModel @Inject constructor(
     }
 
     private suspend fun runBackup() {
+        // checked before the seed phrase is exported, so it never even reaches memory for an upload that is off
+        if (!hotWalletFeatureToggles.isGoogleDriveBackupEnabled) {
+            showGenericError()
+            return
+        }
+
         val hotWallet = getUserWalletUseCase(params.userWalletId).getOrElse { null } as? UserWallet.Hot
         if (hotWallet == null) {
             showGenericError()

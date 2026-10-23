@@ -226,9 +226,11 @@ internal class DefaultCardSdkProvider @Inject constructor(
 
     private fun createConfig(): Config {
         return Config(
-            // Hardened build: verify the card's attestation against the embedded manufacturer key only. The SDK
-            // default (Normal) also sends cardId + cardPublicKey to Tangem's verification server on every scan.
-            attestationMode = AttestationTask.Mode.Offline,
+            // Normal, not Offline: Offline only checks a challenge signed by the key the card itself reports, so a
+            // counterfeit card passes it. Normal also verifies the card's certificate against the manufacturer key
+            // embedded in the SDK. The signed verification response is cached per card public key, so Tangem's
+            // server sees cardId + cardPublicKey once per card per install; later scans re-verify the cached response.
+            attestationMode = AttestationTask.Mode.Normal,
             linkedTerminal = true,
             filter = CardFilter(
                 allowedCardTypes = FirmwareVersion.FirmwareType.entries.toList(),

@@ -73,6 +73,7 @@ internal class CreateCloudBackupModelTest {
     private val cloudBackupRepository: CloudBackupRepository = mockk()
     private val saveBackupPasswordUseCase: SaveBackupPasswordUseCase = mockk()
     private val hotWalletFeatureToggles: HotWalletFeatureToggles = mockk {
+        every { isGoogleDriveBackupEnabled } returns true
         every { isPasswordManagerEnabled } returns true
     }
     private val paramsContainer: ParamsContainer = mockk()
@@ -190,6 +191,25 @@ internal class CreateCloudBackupModelTest {
         // Assert
         assertThat(model.uiState.value).isInstanceOf(CreateCloudBackupUM.Completed::class.java)
         coVerify(exactly = 0) { saveBackupPasswordUseCase(any(), any()) }
+        model.onDestroy()
+    }
+
+    @Test
+    fun `GIVEN cloud backup is off WHEN confirm clicked THEN seed phrase is never exported nor uploaded`() = runTest {
+        // Arrange
+        every { hotWalletFeatureToggles.isGoogleDriveBackupEnabled } returns false
+        val model = createModel(this)
+        advanceUntilIdle()
+
+        // Act
+        driveToConfirmAndSubmit(model)
+        advanceUntilIdle()
+
+        // Assert
+        coVerify(exactly = 0) { exportSeedPhraseUseCase.invoke(any()) }
+        coVerify(exactly = 0) { createCloudBackupUseCase(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { saveBackupPasswordUseCase(any(), any()) }
+        assertThat(model.uiState.value).isNotInstanceOf(CreateCloudBackupUM.Completed::class.java)
         model.onDestroy()
     }
 

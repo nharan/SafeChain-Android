@@ -48,6 +48,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
+import com.google.common.truth.Truth.assertThat
+import com.tangem.features.onboarding.v2.multiwallet.impl.common.AirplaneModeGuardrail
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -131,6 +134,8 @@ internal class MultiWalletFinalizeModelTest {
 
     @BeforeEach
     fun setUp() {
+        // the guardrail fails closed without an Android context, so the JVM tests declare the phone offline
+        AirplaneModeGuardrail.statusOverrideForTesting = OFFLINE_STATUS
         every { parentParams.mode } returns OnboardingMultiWalletComponent.Mode.Onboarding
         multiWalletStateFlow.value = multiWalletStateFlow.value.copy(startFromFinalize = null)
         every { paramsContainer.require<MultiWalletChildParams>() } returns params
@@ -746,7 +751,30 @@ internal class MultiWalletFinalizeModelTest {
         firmwareVersion = mockk(),
     )
 
+    @AfterEach
+    fun tearDown() {
+        AirplaneModeGuardrail.statusOverrideForTesting = null
+    }
+
+    @Test
+    fun `GIVEN airplane mode on but network state unknown WHEN checkStatus THEN not offline`() {
+        // Arrange
+        AirplaneModeGuardrail.statusOverrideForTesting = OFFLINE_STATUS.copy(isStatusUnknown = true)
+
+        // Act
+        val actual = AirplaneModeGuardrail.checkStatus()
+
+        // Assert
+        assertThat(actual.isStrictlyOffline).isFalse()
+    }
+
     private companion object {
+        private val OFFLINE_STATUS = AirplaneModeGuardrail.RadioStatus(
+            isAirplaneModeOn = true,
+            isWifiActive = false,
+            isCellularActive = false,
+            isOtherNetworkActive = false,
+        )
         private val PRIMARY_CARD_PUBLIC_KEY = byteArrayOf(0x01, 0x02)
         private val BACKUP_CARD_PUBLIC_KEY = byteArrayOf(0x0A, 0x0B)
         private const val NON_RING_BATCH_ID = "AC02"

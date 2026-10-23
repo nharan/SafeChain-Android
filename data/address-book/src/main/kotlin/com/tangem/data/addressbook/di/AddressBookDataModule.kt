@@ -6,8 +6,6 @@ import androidx.datastore.dataStoreFile
 import com.tangem.data.addressbook.DefaultAddressBookRepository
 import com.tangem.data.addressbook.store.AddressBookBlobStore
 import com.tangem.data.addressbook.store.DefaultAddressBookBlobStore
-import com.tangem.data.common.cache.etag.ETagsStore
-import com.tangem.store.datasource.addressbook.AddressBookApi
 import com.tangem.core.local.datastore.KotlinxDataStoreSerializer
 import com.tangem.domain.addressbook.crypto.AddressBookCipher
 import com.tangem.domain.addressbook.model.AddressBookBlob
@@ -52,12 +50,9 @@ internal object AddressBookDataModule {
 
     @Provides
     @Singleton
-    @Suppress("LongParameterList")
     fun provideAddressBookRepository(
         blobStore: AddressBookBlobStore,
         cipher: AddressBookCipher,
-        addressBookApi: AddressBookApi,
-        eTagsStore: ETagsStore,
         userWalletsListRepository: UserWalletsListRepository,
         timestampProvider: IsoTimestampProvider,
         dispatchers: CoroutineDispatcherProvider,
@@ -65,8 +60,6 @@ internal object AddressBookDataModule {
         return DefaultAddressBookRepository(
             blobStore = blobStore,
             cipher = cipher,
-            addressBookApi = addressBookApi,
-            eTagsStore = eTagsStore,
             userWalletsListRepository = userWalletsListRepository,
             timestampProvider = timestampProvider,
             dispatchers = dispatchers,

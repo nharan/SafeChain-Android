@@ -45,12 +45,15 @@ internal object AirplaneModeGuardrail {
         val isWifiActive: Boolean,
         val isCellularActive: Boolean,
         val isOtherNetworkActive: Boolean,
+        val isStatusUnknown: Boolean = false,
     ) {
+        /** Fails closed: a state that could not be determined never counts as offline */
         val isStrictlyOffline: Boolean
-            get() = isAirplaneModeOn && !isWifiActive && !isCellularActive && !isOtherNetworkActive
+            get() = !isStatusUnknown && isAirplaneModeOn && !isWifiActive && !isCellularActive && !isOtherNetworkActive
 
         fun describeActiveRadios(): String {
             val issues = mutableListOf<String>()
+            if (isStatusUnknown) issues.add("Network state could not be determined")
             if (!isAirplaneModeOn) issues.add("Airplane Mode is OFF")
             if (isWifiActive) issues.add("Wi-Fi is ON/Connected")
             if (isCellularActive) issues.add("Mobile Data is ON/Connected")
@@ -61,12 +64,7 @@ internal object AirplaneModeGuardrail {
 
     fun checkStatus(): RadioStatus {
         statusOverrideForTesting?.let { return it }
-        val context = resolveContext() ?: return RadioStatus(
-            isAirplaneModeOn = true,
-            isWifiActive = false,
-            isCellularActive = false,
-            isOtherNetworkActive = false,
-        )
+        val context = resolveContext() ?: return UNKNOWN_STATUS
         val isAirplaneOn = runCatching {
             Settings.Global.getInt(context.contentResolver, Settings.Global.AIRPLANE_MODE_ON, 0) != 0
         }.getOrDefault(false)
@@ -75,29 +73,27 @@ internal object AirplaneModeGuardrail {
         var cellularActive = false
         var otherActive = false
 
-        if (context != null) {
-            runCatching {
-                val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-                @Suppress("DEPRECATION")
-                val networks = cm?.allNetworks.orEmpty()
-                for (network in networks) {
-                    val caps = cm?.getNetworkCapabilities(network) ?: continue
-                    if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
-                        wifiActive = true
-                    }
-                    if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
-                        cellularActive = true
-                    }
-                    if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ||
-                        caps.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH)
-                    ) {
-                        otherActive = true
-                    }
+        val isConnectivityRead = runCatching {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            @Suppress("DEPRECATION")
+            for (network in cm.allNetworks) {
+                val caps = cm.getNetworkCapabilities(network) ?: continue
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                    wifiActive = true
+                }
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
+                    cellularActive = true
+                }
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ||
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH) ||
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+                ) {
+                    otherActive = true
                 }
             }
-        }
+        }.isSuccess
 
-        runCatching {
+        val isInterfacesRead = runCatching {
             val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
             for (ni in interfaces) {
                 if (!ni.isUp || ni.isLoopback) continue
@@ -114,15 +110,24 @@ internal object AirplaneModeGuardrail {
                     }
                 }
             }
-        }
+        }.isSuccess
 
         return RadioStatus(
             isAirplaneModeOn = isAirplaneOn,
             isWifiActive = wifiActive,
             isCellularActive = cellularActive,
             isOtherNetworkActive = otherActive,
+            isStatusUnknown = !isConnectivityRead || !isInterfacesRead,
         )
     }
+
+    private val UNKNOWN_STATUS = RadioStatus(
+        isAirplaneModeOn = false,
+        isWifiActive = false,
+        isCellularActive = false,
+        isOtherNetworkActive = false,
+        isStatusUnknown = true,
+    )
 
     fun openAirplaneSettings() {
         val context = resolveContext() ?: return

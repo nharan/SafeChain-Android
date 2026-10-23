@@ -4,13 +4,6 @@ import arrow.core.left
 import arrow.core.right
 import com.google.common.truth.Truth.assertThat
 import com.tangem.data.addressbook.store.AddressBookBlobStore
-import com.tangem.data.common.cache.etag.ETagsStore
-import com.tangem.store.datasource.addressbook.AddressBookApi
-import com.tangem.store.datasource.addressbook.models.SyncAddressBooksRequest
-import com.tangem.store.datasource.addressbook.models.SyncAddressBooksResponse
-import com.tangem.store.datasource.addressbook.models.UpdateAddressBookResponse
-import com.tangem.core.remote.response.ApiResponse
-import com.tangem.core.remote.response.ApiResponseError
 import com.tangem.domain.addressbook.crypto.AddressBookCipher
 import com.tangem.domain.addressbook.error.AddressBookCryptoError
 import com.tangem.domain.addressbook.error.AddressBookSyncError
@@ -34,8 +27,6 @@ internal class DefaultAddressBookRepositoryTest {
 
     private val blobStore: AddressBookBlobStore = mockk()
     private val cipher: AddressBookCipher = mockk()
-    private val addressBookApi: AddressBookApi = mockk()
-    private val eTagsStore: ETagsStore = mockk(relaxed = true)
     private val userWalletsListRepository: UserWalletsListRepository = mockk()
     private val timestampProvider: IsoTimestampProvider = mockk()
 
@@ -46,8 +37,6 @@ internal class DefaultAddressBookRepositoryTest {
     private val repository = DefaultAddressBookRepository(
         blobStore = blobStore,
         cipher = cipher,
-        addressBookApi = addressBookApi,
-        eTagsStore = eTagsStore,
         userWalletsListRepository = userWalletsListRepository,
         timestampProvider = timestampProvider,
         dispatchers = TestingCoroutineDispatcherProvider(),
@@ -55,11 +44,9 @@ internal class DefaultAddressBookRepositoryTest {
 
     @BeforeEach
     fun setup() {
-        clearMocks(blobStore, cipher, addressBookApi, eTagsStore, userWalletsListRepository, timestampProvider)
+        clearMocks(blobStore, cipher, userWalletsListRepository, timestampProvider)
         every { timestampProvider.now() } returns TIMESTAMP
         coEvery { userWalletsListRepository.userWalletsSync() } returns listOf(userWallet)
-        coEvery { addressBookApi.syncAddressBooks(any()) } returns
-            ApiResponse.Success(SyncAddressBooksResponse(items = emptyList()))
     }
 
     @Test
@@ -78,22 +65,6 @@ internal class DefaultAddressBookRepositoryTest {
     }
 
     @Test
-    fun `GIVEN blob WHEN getContacts THEN does not sync on collection`() = runTest {
-        // Arrange
-        val contact = createContact(id = "c1", name = "Alice")
-        val blob = createBlob()
-        every { blobStore.getBlob(UserWalletId(WALLET_A)) } returns flowOf(blob)
-        every { cipher.decrypt(blob, userWallet) } returns AddressBook(listOf(contact)).right()
-
-        // Act
-        repository.getContacts(UserWalletId(WALLET_A)).first()
-
-        // Assert
-        // Sync is now triggered by the feature entry points, not on flow collection.
-        coVerify(exactly = 0) { addressBookApi.syncAddressBooks(any()) }
-    }
-
-    @Test
     fun `GIVEN multiple wallets WHEN getAllContacts THEN emits contacts from all wallets`() = runTest {
         // Arrange
         val contact = createContact(id = "c1", name = "Alice")
@@ -107,23 +78,6 @@ internal class DefaultAddressBookRepositoryTest {
 
         // Assert
         assertThat(result).containsExactly(contact)
-    }
-
-    @Test
-    fun `GIVEN blob WHEN getAllContacts THEN does not sync on collection`() = runTest {
-        // Arrange
-        val contact = createContact(id = "c1", name = "Alice")
-        val blob = createBlob()
-        every { userWalletsListRepository.userWallets } returns MutableStateFlow(listOf(userWallet))
-        every { blobStore.getBlobs(setOf(UserWalletId(WALLET_A))) } returns flowOf(listOf(blob))
-        every { cipher.decrypt(blob, userWallet) } returns AddressBook(listOf(contact)).right()
-
-        // Act
-        repository.getAllContacts().first()
-
-        // Assert
-        // Sync is now triggered by the feature entry points, not on flow collection.
-        coVerify(exactly = 0) { addressBookApi.syncAddressBooks(any()) }
     }
 
     @Test
@@ -153,129 +107,48 @@ internal class DefaultAddressBookRepositoryTest {
     }
 
     @Test
-    fun `GIVEN backend accepts WHEN saveContact THEN pushes merged book and stores blob and etag`() = runTest {
+    fun `GIVEN stored book WHEN saveContact THEN stores merged book locally`() = runTest {
         // Arrange
         val existing = createContact(id = "c1", name = "Alice")
         val added = createContact(id = "c2", name = "Bob")
         val storedBlob = createBlob()
         coEvery { blobStore.getBlobSync(UserWalletId(WALLET_A)) } returns storedBlob
-        every { cipher.decrypt(storedBlob, userWallet) } returns
-            AddressBook(listOf(existing)).right()
+        every { cipher.decrypt(storedBlob, userWallet) } returns AddressBook(listOf(existing)).right()
         val bookSlot = slot<AddressBook>()
-        val newBlob = createBlob()
+        val newBlob = createBlob(ciphertext = "beefdead")
         every { cipher.encrypt(capture(bookSlot), userWallet, any()) } returns newBlob.right()
         coEvery { blobStore.storeBlob(newBlob) } returns Unit
-        coEvery { addressBookApi.updateAddressBook(WALLET_A, any(), any()) } returns successPutResponse()
 
         // Act
         val result = repository.saveContact(added)
 
         // Assert
         assertThat(result).isEqualTo(Unit.right())
-        assertThat(bookSlot.captured.contacts).containsExactly(existing, added)
+        assertThat(bookSlot.captured).isEqualTo(AddressBook(listOf(existing, added)))
         coVerify(exactly = 1) { blobStore.storeBlob(newBlob) }
-        coVerify(exactly = 1) { eTagsStore.store(UserWalletId(WALLET_A), ETagsStore.Key.AddressBook, ETAG_NEW) }
     }
 
     @Test
-    fun `GIVEN no stored etag WHEN saveContact THEN PUT is sent without If-Match`() = runTest {
+    fun `GIVEN no stored book WHEN saveContact THEN stores new book locally`() = runTest {
         // Arrange
+        val contact = createContact(id = "c1", name = "Alice")
         coEvery { blobStore.getBlobSync(UserWalletId(WALLET_A)) } returns null
+        val bookSlot = slot<AddressBook>()
         val newBlob = createBlob()
-        every { cipher.encrypt(any(), userWallet, any()) } returns newBlob.right()
-        coEvery { blobStore.storeBlob(any()) } returns Unit
-        coEvery { eTagsStore.getSyncOrNull(UserWalletId(WALLET_A), ETagsStore.Key.AddressBook) } returns null
-        coEvery { addressBookApi.updateAddressBook(WALLET_A, null, any()) } returns successPutResponse()
+        every { cipher.encrypt(capture(bookSlot), userWallet, any()) } returns newBlob.right()
+        coEvery { blobStore.storeBlob(newBlob) } returns Unit
 
         // Act
-        val result = repository.saveContact(createContact(id = "c1", name = "Alice"))
+        val result = repository.saveContact(contact)
 
         // Assert
         assertThat(result).isEqualTo(Unit.right())
-        coVerify(exactly = 1) { addressBookApi.updateAddressBook(WALLET_A, null, any()) }
+        assertThat(bookSlot.captured).isEqualTo(AddressBook(listOf(contact)))
+        coVerify(exactly = 1) { blobStore.storeBlob(newBlob) }
     }
 
     @Test
-    fun `GIVEN stored etag WHEN saveContact THEN PUT carries it in If-Match`() = runTest {
-        // Arrange
-        coEvery { blobStore.getBlobSync(UserWalletId(WALLET_A)) } returns null
-        every { cipher.encrypt(any(), userWallet, any()) } returns createBlob().right()
-        coEvery { blobStore.storeBlob(any()) } returns Unit
-        coEvery { eTagsStore.getSyncOrNull(UserWalletId(WALLET_A), ETagsStore.Key.AddressBook) } returns ETAG_OLD
-        coEvery { addressBookApi.updateAddressBook(WALLET_A, ETAG_OLD, any()) } returns successPutResponse()
-
-        // Act
-        repository.saveContact(createContact(id = "c1", name = "Alice"))
-
-        // Assert
-        coVerify(exactly = 1) { addressBookApi.updateAddressBook(WALLET_A, ETAG_OLD, any()) }
-    }
-
-    @Test
-    fun `GIVEN etag conflict WHEN saveContact THEN returns Conflict and does not store locally`() = runTest {
-        // Arrange
-        coEvery { blobStore.getBlobSync(UserWalletId(WALLET_A)) } returns null
-        every { cipher.encrypt(any(), userWallet, any()) } returns createBlob().right()
-        coEvery { addressBookApi.updateAddressBook(WALLET_A, any(), any()) } returns
-            errorResponse(ApiResponseError.HttpException.Code.PRECONDITION_FAILED)
-
-        // Act
-        val result = repository.saveContact(createContact(id = "c1", name = "Alice"))
-
-        // Assert
-        assertThat(result).isEqualTo(AddressBookSyncError.Conflict.left())
-        coVerify(exactly = 0) { blobStore.storeBlob(any()) }
-        coVerify(exactly = 0) { eTagsStore.store(any(), any(), any()) }
-    }
-
-    @Test
-    fun `GIVEN etag conflict WHEN saveContact THEN re-syncs once without retrying the write`() = runTest {
-        // Arrange
-        coEvery { blobStore.getBlobSync(UserWalletId(WALLET_A)) } returns null
-        every { cipher.encrypt(any(), userWallet, any()) } returns createBlob().right()
-        coEvery { addressBookApi.updateAddressBook(WALLET_A, any(), any()) } returns
-            errorResponse(ApiResponseError.HttpException.Code.PRECONDITION_FAILED)
-
-        // Act
-        val result = repository.saveContact(createContact(id = "c1", name = "Alice"))
-
-        // Assert
-        assertThat(result).isEqualTo(AddressBookSyncError.Conflict.left())
-        coVerify(exactly = 1) { addressBookApi.syncAddressBooks(any()) }
-        coVerify(exactly = 1) { addressBookApi.updateAddressBook(WALLET_A, any(), any()) }
-    }
-
-    @Test
-    fun `GIVEN network error WHEN saveContact THEN does not re-sync`() = runTest {
-        // Arrange
-        coEvery { blobStore.getBlobSync(UserWalletId(WALLET_A)) } returns null
-        every { cipher.encrypt(any(), userWallet, any()) } returns createBlob().right()
-        coEvery { addressBookApi.updateAddressBook(WALLET_A, any(), any()) } returns networkErrorResponse()
-
-        // Act
-        repository.saveContact(createContact(id = "c1", name = "Alice"))
-
-        // Assert
-        coVerify(exactly = 0) { addressBookApi.syncAddressBooks(any()) }
-    }
-
-    @Test
-    fun `GIVEN no network WHEN saveContact THEN returns Network and does not store locally`() = runTest {
-        // Arrange
-        coEvery { blobStore.getBlobSync(UserWalletId(WALLET_A)) } returns null
-        every { cipher.encrypt(any(), userWallet, any()) } returns createBlob().right()
-        coEvery { addressBookApi.updateAddressBook(WALLET_A, any(), any()) } returns networkErrorResponse()
-
-        // Act
-        val result = repository.saveContact(createContact(id = "c1", name = "Alice"))
-
-        // Assert
-        assertThat(result).isEqualTo(AddressBookSyncError.Network.left())
-        coVerify(exactly = 0) { blobStore.storeBlob(any()) }
-    }
-
-    @Test
-    fun `GIVEN stored book that fails to decrypt WHEN saveContact THEN returns DecryptionFailed and pushes nothing`() =
+    fun `GIVEN stored book that fails to decrypt WHEN saveContact THEN returns DecryptionFailed and stores nothing`() =
         runTest {
             // Arrange
             val storedBlob = createBlob()
@@ -287,10 +160,8 @@ internal class DefaultAddressBookRepositoryTest {
 
             // Assert
             assertThat(result).isEqualTo(AddressBookSyncError.DecryptionFailed.left())
-            // The broken book is left untouched: nothing is encrypted, pushed, or stored.
-            coVerify(exactly = 0) { addressBookApi.updateAddressBook(any(), any(), any()) }
+            verify(exactly = 0) { cipher.encrypt(any(), any(), any()) }
             coVerify(exactly = 0) { blobStore.storeBlob(any()) }
-            coVerify(exactly = 0) { eTagsStore.store(any(), any(), any()) }
         }
 
     @Test
@@ -300,79 +171,54 @@ internal class DefaultAddressBookRepositoryTest {
         val updated = createContact(id = "c1", name = "Alice Updated")
         val storedBlob = createBlob()
         coEvery { blobStore.getBlobSync(UserWalletId(WALLET_A)) } returns storedBlob
-        every { cipher.decrypt(storedBlob, userWallet) } returns
-            AddressBook(listOf(original)).right()
+        every { cipher.decrypt(storedBlob, userWallet) } returns AddressBook(listOf(original)).right()
         val bookSlot = slot<AddressBook>()
-        every { cipher.encrypt(capture(bookSlot), userWallet, any()) } returns createBlob().right()
-        coEvery { blobStore.storeBlob(any()) } returns Unit
-        coEvery { addressBookApi.updateAddressBook(WALLET_A, any(), any()) } returns successPutResponse()
+        val newBlob = createBlob(ciphertext = "beefdead")
+        every { cipher.encrypt(capture(bookSlot), userWallet, any()) } returns newBlob.right()
+        coEvery { blobStore.storeBlob(newBlob) } returns Unit
 
         // Act
-        repository.saveContact(updated)
+        val result = repository.saveContact(updated)
 
         // Assert
-        assertThat(bookSlot.captured.contacts).containsExactly(updated)
+        assertThat(result).isEqualTo(Unit.right())
+        assertThat(bookSlot.captured).isEqualTo(AddressBook(listOf(updated)))
+        coVerify(exactly = 1) { blobStore.storeBlob(newBlob) }
     }
 
     @Test
-    fun `GIVEN contact in wallet WHEN deleteContact THEN pushes and re-stores book without it`() = runTest {
+    fun `GIVEN contact in wallet WHEN deleteContact THEN stores book without it locally`() = runTest {
         // Arrange
         val kept = createContact(id = "c1", name = "Alice")
         val removed = createContact(id = "c2", name = "Bob")
         val storedBlob = createBlob()
         coEvery { blobStore.getBlobSync(UserWalletId(WALLET_A)) } returns storedBlob
-        every { cipher.decrypt(storedBlob, userWallet) } returns
-            AddressBook(listOf(kept, removed)).right()
+        every { cipher.decrypt(storedBlob, userWallet) } returns AddressBook(listOf(kept, removed)).right()
         val bookSlot = slot<AddressBook>()
-        val newBlob = createBlob()
+        val newBlob = createBlob(ciphertext = "beefdead")
         every { cipher.encrypt(capture(bookSlot), userWallet, any()) } returns newBlob.right()
         coEvery { blobStore.storeBlob(newBlob) } returns Unit
-        coEvery { addressBookApi.updateAddressBook(WALLET_A, any(), any()) } returns successPutResponse()
 
         // Act
         val result = repository.deleteContact(ContactId("c2"))
 
         // Assert
         assertThat(result).isEqualTo(Unit.right())
-        assertThat(bookSlot.captured.contacts).containsExactly(kept)
+        assertThat(bookSlot.captured).isEqualTo(AddressBook(listOf(kept)))
         coVerify(exactly = 1) { blobStore.storeBlob(newBlob) }
     }
 
     @Test
-    fun `GIVEN backend returns changed item WHEN syncAddressBooks THEN stores blob and etag for it`() = runTest {
+    fun `GIVEN wallets WHEN syncAddressBooks THEN returns right AND stores nothing`() = runTest {
         // Arrange
         val walletB: UserWallet = mockk { every { walletId } returns UserWalletId(WALLET_B) }
         coEvery { userWalletsListRepository.userWalletsSync() } returns listOf(userWallet, walletB)
-        val requestSlot = slot<SyncAddressBooksRequest>()
-        // Only wallet A changed; wallet B is omitted (matching etag) → must keep its local copy.
-        coEvery { addressBookApi.syncAddressBooks(capture(requestSlot)) } returns
-            ApiResponse.Success(SyncAddressBooksResponse(items = listOf(syncItem(WALLET_A))))
-        val blobSlot = slot<AddressBookBlob>()
-        coEvery { blobStore.storeBlob(capture(blobSlot)) } returns Unit
 
         // Act
         val result = repository.syncAddressBooks()
 
         // Assert
         assertThat(result).isEqualTo(Unit.right())
-        assertThat(requestSlot.captured.wallets.map { it.walletId }).containsExactly(WALLET_A, WALLET_B)
-        assertThat(blobSlot.captured.walletId).isEqualTo(WALLET_A)
-        coVerify(exactly = 1) { blobStore.storeBlob(any()) }
-        coVerify(exactly = 1) { eTagsStore.store(UserWalletId(WALLET_A), ETagsStore.Key.AddressBook, ETAG_NEW) }
-        coVerify(exactly = 0) { blobStore.storeBlob(match { it.walletId == WALLET_B }) }
-    }
-
-    @Test
-    fun `GIVEN unauthorized WHEN syncAddressBooks THEN returns Unauthorized and stores nothing`() = runTest {
-        // Arrange
-        coEvery { addressBookApi.syncAddressBooks(any()) } returns
-            errorResponse(ApiResponseError.HttpException.Code.UNAUTHORIZED)
-
-        // Act
-        val result = repository.syncAddressBooks()
-
-        // Assert
-        assertThat(result).isEqualTo(AddressBookSyncError.Unauthorized.left())
         coVerify(exactly = 0) { blobStore.storeBlob(any()) }
     }
 
@@ -383,8 +229,7 @@ internal class DefaultAddressBookRepositoryTest {
         val bob = createContact(id = "c2", name = "Bob")
         val blob = createBlob()
         coEvery { blobStore.getBlobSync(UserWalletId(WALLET_A)) } returns blob
-        every { cipher.decrypt(blob, userWallet) } returns
-            AddressBook(listOf(alice, bob)).right()
+        every { cipher.decrypt(blob, userWallet) } returns AddressBook(listOf(alice, bob)).right()
 
         // Act
         val result = repository.getContact(UserWalletId(WALLET_A), name = "Bob")
@@ -423,7 +268,7 @@ internal class DefaultAddressBookRepositoryTest {
     }
 
     @Test
-    fun `GIVEN stored version newer than supported WHEN saveContact THEN VersionMismatch and pushes nothing`() =
+    fun `GIVEN stored version newer than supported WHEN saveContact THEN VersionMismatch and stores nothing`() =
         runTest {
             // Arrange
             val storedBlob = createBlob(version = "2.0")
@@ -435,30 +280,26 @@ internal class DefaultAddressBookRepositoryTest {
             // Assert
             assertThat(result).isEqualTo(AddressBookSyncError.VersionMismatch.left())
             verify(exactly = 0) { cipher.decrypt(any(), any()) }
-            coVerify(exactly = 0) { addressBookApi.updateAddressBook(any(), any(), any()) }
             coVerify(exactly = 0) { blobStore.storeBlob(any()) }
         }
 
     @Test
-    fun `GIVEN stored version older than supported WHEN saveContact THEN pushes upgraded to current version`() =
+    fun `GIVEN stored version older than supported WHEN saveContact THEN stores book upgraded to current version`() =
         runTest {
             // Arrange
             val storedBlob = createBlob(version = "0.9")
             coEvery { blobStore.getBlobSync(UserWalletId(WALLET_A)) } returns storedBlob
             every { cipher.decrypt(storedBlob, userWallet) } returns AddressBook(emptyList()).right()
             every { cipher.encrypt(any(), userWallet, any()) } returns createBlob().right()
-            coEvery { blobStore.storeBlob(any()) } returns Unit
-            val bodySlot = slot<com.tangem.store.datasource.addressbook.models.UpdateAddressBookRequest>()
-            coEvery {
-                addressBookApi.updateAddressBook(WALLET_A, any(), capture(bodySlot))
-            } returns successPutResponse()
+            val storedSlot = slot<AddressBookBlob>()
+            coEvery { blobStore.storeBlob(capture(storedSlot)) } returns Unit
 
             // Act
             val result = repository.saveContact(createContact(id = "c1", name = "Alice"))
 
             // Assert
             assertThat(result).isEqualTo(Unit.right())
-            assertThat(bodySlot.captured.version).isEqualTo(AddressBookBlob.CURRENT_VERSION)
+            assertThat(storedSlot.captured.version).isEqualTo(AddressBookBlob.CURRENT_VERSION)
         }
 
     @Test
@@ -470,10 +311,9 @@ internal class DefaultAddressBookRepositoryTest {
         // Act
         val result = repository.deleteContact(ContactId("c2"))
 
-        // Assert — the newer book is skipped, so nothing is decrypted, pushed or stored.
+        // Assert
         assertThat(result).isEqualTo(Unit.right())
         verify(exactly = 0) { cipher.decrypt(any(), any()) }
-        coVerify(exactly = 0) { addressBookApi.updateAddressBook(any(), any(), any()) }
         coVerify(exactly = 0) { blobStore.storeBlob(any()) }
     }
 
@@ -542,31 +382,6 @@ internal class DefaultAddressBookRepositoryTest {
         assertThat(result).isTrue()
     }
 
-    private fun successPutResponse(etag: String = ETAG_NEW): ApiResponse<UpdateAddressBookResponse> =
-        ApiResponse.Success(
-            data = UpdateAddressBookResponse(walletId = WALLET_A, etag = etag, updatedAt = TIMESTAMP),
-        )
-
-    @Suppress("UNCHECKED_CAST")
-    private fun <T : Any> errorResponse(code: ApiResponseError.HttpException.Code): ApiResponse<T> =
-        ApiResponse.Error(
-            cause = ApiResponseError.HttpException(code = code, message = null, errorBody = null),
-        ) as ApiResponse<T>
-
-    @Suppress("UNCHECKED_CAST")
-    private fun <T : Any> networkErrorResponse(): ApiResponse<T> =
-        ApiResponse.Error(cause = ApiResponseError.NetworkException()) as ApiResponse<T>
-
-    private fun syncItem(walletId: String): SyncAddressBooksResponse.Item = SyncAddressBooksResponse.Item(
-        walletId = walletId,
-        etag = ETAG_NEW,
-        version = AddressBookBlob.CURRENT_VERSION,
-        updatedAt = TIMESTAMP,
-        nonce = "00112233445566778899aabb",
-        ciphertext = "deadbeef",
-        authTag = "cafebabecafebabecafebabecafebabe",
-    )
-
     private fun createContact(id: String, name: String, iconColor: String = "KekColor"): Contact = Contact(
         id = ContactId(id),
         walletId = UserWalletId(WALLET_A),
@@ -581,12 +396,13 @@ internal class DefaultAddressBookRepositoryTest {
     private fun createBlob(
         walletId: String = WALLET_A,
         version: String = AddressBookBlob.CURRENT_VERSION,
+        ciphertext: String = "deadbeef",
     ): AddressBookBlob = AddressBookBlob(
         version = version,
         walletId = walletId,
         updatedAt = TIMESTAMP,
         nonce = "00112233445566778899aabb",
-        ciphertext = "deadbeef",
+        ciphertext = ciphertext,
         authTag = "cafebabecafebabecafebabecafebabe",
     )
 
@@ -594,7 +410,5 @@ internal class DefaultAddressBookRepositoryTest {
         const val WALLET_A = "0a0a0a"
         const val WALLET_B = "0b0b0b"
         const val TIMESTAMP = "2026-05-22T09:00:00.000Z"
-        const val ETAG_OLD = "etag-old"
-        const val ETAG_NEW = "etag-new"
     }
 }

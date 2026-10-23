@@ -14,7 +14,6 @@ import com.tangem.domain.cloudbackup.models.CloudBackupSecretData
 import com.tangem.domain.cloudbackup.models.RestoredCloudBackup
 import com.tangem.google.drive.DriveFile
 import com.tangem.google.drive.DriveFileListResponse
-import com.tangem.google.drive.DriveFileMetadata
 import com.tangem.google.drive.GoogleDriveApi
 import com.tangem.google.drive.GoogleDriveTokenProvider
 import com.tangem.utils.coroutines.TestingCoroutineDispatcherProvider
@@ -23,7 +22,6 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
-import io.mockk.slot
 import io.mockk.verify
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -265,32 +263,10 @@ internal class DefaultCloudBackupRepositoryTest {
     }
 
     @Test
-    fun `GIVEN same-named backup exists WHEN uploadBackup for a new wallet THEN file name is incremented`() = runTest {
-        // Arrange
-        coEvery { api.listFiles(any(), any(), any()) } answers {
-            val query = secondArg<String>()
-            val files = if (query.contains("mimeType")) {
-                listOf(DriveFile(id = "folder-id", name = "Tangem"))
-            } else {
-                listOf(
-                    DriveFile(
-                        id = "existing-id",
-                        name = "Wallet.backup.json",
-                        appProperties = mapOf("walletId" to "other-wallet"),
-                    ),
-                )
-            }
-            Response.success(DriveFileListResponse(files = files))
-        }
-        val metadata = slot<DriveFileMetadata>()
-        coEvery { api.createFile(any(), capture(metadata), any()) } returns Response.success(DriveFile(id = "new-id"))
-        coEvery {
-            api.uploadFileContent(any(), any(), any(), any(), any())
-        } returns Response.success(DriveFile(id = "new-id"))
-
+    fun `GIVEN any backup WHEN uploadBackup THEN refused AND nothing is encrypted or sent to Drive`() = runTest {
         // Act
-        repository.uploadBackup(
-            walletId = "new-wallet",
+        val actual = repository.uploadBackup(
+            walletId = WALLET_ID,
             walletName = "Wallet",
             createdAtMillis = 0L,
             secret = secret,
@@ -298,231 +274,11 @@ internal class DefaultCloudBackupRepositoryTest {
         )
 
         // Assert
-        assertThat(metadata.captured.name).isEqualTo("Wallet (1).backup.json")
-    }
-
-    @Test
-    fun `GIVEN same-named backup exists WHEN uploadBackup for a new wallet THEN backupName is incremented`() = runTest {
-        // Arrange
-        coEvery { api.listFiles(any(), any(), any()) } answers {
-            val query = secondArg<String>()
-            val files = if (query.contains("mimeType")) {
-                listOf(DriveFile(id = "folder-id", name = "Tangem"))
-            } else {
-                listOf(
-                    DriveFile(
-                        id = "existing-id",
-                        name = "Wallet.backup.json",
-                        appProperties = mapOf("walletId" to "other-wallet"),
-                    ),
-                )
-            }
-            Response.success(DriveFileListResponse(files = files))
-        }
-        coEvery { api.createFile(any(), any(), any()) } returns Response.success(DriveFile(id = "new-id"))
-        coEvery {
-            api.uploadFileContent(any(), any(), any(), any(), any())
-        } returns Response.success(DriveFile(id = "new-id"))
-
-        // Act
-        val result = repository.uploadBackup(
-            walletId = "new-wallet",
-            walletName = "Wallet",
-            createdAtMillis = 0L,
-            secret = secret,
-            password = "p".toCharArray(),
-        )
-
-        // Assert
-        assertThat(result.getOrNull()?.backupName).isEqualTo("Wallet (1)")
-    }
-
-    @Test
-    fun `GIVEN backup exists for wallet WHEN uploadBackup THEN metadata is refreshed instead of created`() = runTest {
-        // Arrange
-        coEvery { api.listFiles(any(), any(), any()) } returns Response.success(
-            DriveFileListResponse(
-                files = listOf(
-                    DriveFile(
-                        id = "existing-id",
-                        name = "OldName.backup.json",
-                        appProperties = mapOf(
-                            "walletId" to "wallet-1",
-                            "walletName" to "OldName",
-                            "createdAt" to "1000",
-                        ),
-                    ),
-                ),
-            ),
-        )
-        val metadata = slot<DriveFileMetadata>()
-        coEvery {
-            api.updateFileMetadata(any(), "existing-id", capture(metadata), any())
-        } returns Response.success(DriveFile(id = "existing-id"))
-        coEvery {
-            api.uploadFileContent(any(), any(), any(), any(), any())
-        } returns Response.success(DriveFile(id = "existing-id"))
-
-        // Act
-        repository.uploadBackup(
-            walletId = "wallet-1",
-            walletName = "NewName",
-            createdAtMillis = 2000L,
-            secret = secret,
-            password = "p".toCharArray(),
-        )
-
-        // Assert
-        assertThat(metadata.captured.name).isEqualTo("NewName.backup.json")
-        assertThat(metadata.captured.appProperties).containsEntry("walletName", "NewName")
-        assertThat(metadata.captured.appProperties).containsEntry("createdAt", "2000")
+        assertThat(actual).isEqualTo(CloudBackupError.CloudUnavailable.left())
+        verify(exactly = 0) { cipher.encrypt(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { tokenProvider.getAccessToken(any()) }
         coVerify(exactly = 0) { api.createFile(any(), any(), any()) }
-    }
-
-    @Test
-    fun `GIVEN new backup WHEN uploadBackup THEN backups folder is looked up in Drive root`() = runTest {
-        // Arrange
-        val queries = mutableListOf<String>()
-        coEvery { api.listFiles(any(), capture(queries), any()) } answers {
-            val query = secondArg<String>()
-            val files = if (query.contains("mimeType")) listOf(DriveFile(id = "folder-id", name = "Tangem")) else emptyList()
-            Response.success(DriveFileListResponse(files = files))
-        }
-        coEvery { api.createFile(any(), any(), any()) } returns Response.success(DriveFile(id = "new-id"))
-        coEvery {
-            api.uploadFileContent(any(), any(), any(), any(), any())
-        } returns Response.success(DriveFile(id = "new-id"))
-
-        // Act
-        repository.uploadBackup(
-            walletId = "w1",
-            walletName = "Wallet",
-            createdAtMillis = 0L,
-            secret = secret,
-            password = "p".toCharArray(),
-        )
-
-        // Assert
-        assertThat(queries.any { it.contains("'root' in parents") }).isTrue()
-    }
-
-    @Test
-    fun `GIVEN backups folder absent WHEN uploadBackup THEN folder is created in Drive root`() = runTest {
-        // Arrange
-        coEvery { api.listFiles(any(), any(), any()) } returns Response.success(DriveFileListResponse(files = emptyList()))
-        val created = mutableListOf<DriveFileMetadata>()
-        coEvery { api.createFile(any(), capture(created), any()) } returns Response.success(DriveFile(id = "id"))
-        coEvery {
-            api.uploadFileContent(any(), any(), any(), any(), any())
-        } returns Response.success(DriveFile(id = "id"))
-
-        // Act
-        repository.uploadBackup(
-            walletId = "w1",
-            walletName = "Wallet",
-            createdAtMillis = 0L,
-            secret = secret,
-            password = "p".toCharArray(),
-        )
-
-        // Assert
-        val folderMetadata = created.single { it.mimeType == FOLDER_MIME_TYPE }
-        assertThat(folderMetadata.parents).containsExactly("root")
-    }
-
-    @Test
-    fun `GIVEN no files WHEN resolveUniqueBackupName THEN base name`() {
-        assertThat(resolveUniqueBackupName("Wallet", "backup.json", emptySet())).isEqualTo("Wallet")
-    }
-
-    @Test
-    fun `GIVEN base name taken WHEN resolveUniqueBackupName THEN first increment`() {
-        assertThat(resolveUniqueBackupName("Wallet", "backup.json", setOf("Wallet.backup.json")))
-            .isEqualTo("Wallet (1)")
-    }
-
-    @Test
-    fun `GIVEN base and first increment taken WHEN resolveUniqueBackupName THEN second increment`() {
-        val existing = setOf("Wallet.backup.json", "Wallet (1).backup.json")
-        assertThat(resolveUniqueBackupName("Wallet", "backup.json", existing)).isEqualTo("Wallet (2)")
-    }
-
-    @Test
-    fun `GIVEN only increment taken but base free WHEN resolveUniqueBackupName THEN base name`() {
-        assertThat(resolveUniqueBackupName("Wallet", "backup.json", setOf("Wallet (1).backup.json")))
-            .isEqualTo("Wallet")
-    }
-
-    @Test
-    fun `GIVEN a different name taken WHEN resolveUniqueBackupName THEN unaffected`() {
-        assertThat(resolveUniqueBackupName("Other", "backup.json", setOf("Wallet.backup.json")))
-            .isEqualTo("Other")
-    }
-
-    @Test
-    fun `GIVEN name longer than the limit WHEN resolveUniqueBackupName THEN name fits into 255 bytes`() {
-        // Arrange
-        val walletName = "W".repeat(n = 300)
-
-        // Act
-        val actual = resolveUniqueBackupName(walletName, "backup.json", emptySet())
-
-        // Assert
-        assertThat(actual).isEqualTo("W".repeat(n = 243))
-        assertThat("$actual.backup.json".toByteArray(Charsets.UTF_8)).hasLength(255)
-    }
-
-    @Test
-    fun `GIVEN multibyte name longer than the limit WHEN resolveUniqueBackupName THEN cut between characters`() {
-        // Arrange
-        val walletName = "Ж".repeat(n = 300)
-
-        // Act
-        val actual = resolveUniqueBackupName(walletName, "backup.json", emptySet())
-
-        // Assert
-        assertThat(actual).isEqualTo("Ж".repeat(n = 121))
-        assertThat("$actual.backup.json".toByteArray(Charsets.UTF_8).size).isAtMost(255)
-    }
-
-    @Test
-    fun `GIVEN truncated name taken WHEN resolveUniqueBackupName THEN increment also fits into 255 bytes`() {
-        // Arrange
-        val walletName = "W".repeat(n = 300)
-        val existing = setOf(resolveUniqueBackupName(walletName, "backup.json", emptySet()) + ".backup.json")
-
-        // Act
-        val actual = resolveUniqueBackupName(walletName, "backup.json", existing)
-
-        // Assert
-        assertThat(actual).isEqualTo("W".repeat(n = 239) + " (1)")
-        assertThat("$actual.backup.json".toByteArray(Charsets.UTF_8)).hasLength(255)
-    }
-
-    @Test
-    fun `GIVEN long wallet name WHEN uploadBackup THEN name appProperty fits into the Drive limit`() = runTest {
-        // Arrange
-        val walletName = "Ж".repeat(n = 300)
-        coEvery { api.listFiles(any(), any(), any()) } returns Response.success(DriveFileListResponse(files = emptyList()))
-        val created = mutableListOf<DriveFileMetadata>()
-        coEvery { api.createFile(any(), capture(created), any()) } returns Response.success(DriveFile(id = "id"))
-        coEvery {
-            api.uploadFileContent(any(), any(), any(), any(), any())
-        } returns Response.success(DriveFile(id = "id"))
-
-        // Act
-        repository.uploadBackup(
-            walletId = "w1",
-            walletName = walletName,
-            createdAtMillis = 0L,
-            secret = secret,
-            password = "p".toCharArray(),
-        )
-
-        // Assert
-        val storedName = created.single { it.mimeType != FOLDER_MIME_TYPE }.appProperties?.get("walletName")
-        assertThat(storedName).isEqualTo("Ж".repeat(n = 57))
-        assertThat(("walletName" + storedName).toByteArray(Charsets.UTF_8).size).isAtMost(124)
+        coVerify(exactly = 0) { api.uploadFileContent(any(), any(), any(), any(), any()) }
     }
 
     @Test
@@ -712,7 +468,6 @@ internal class DefaultCloudBackupRepositoryTest {
         const val HTTP_UNAUTHORIZED = 401
         const val HTTP_INTERNAL_ERROR = 500
         const val WALLET_ID = "wallet-1"
-        const val FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
         const val SECRET_PAYLOAD = """{"mnemonic":"m","passphraseRequired":0}"""
         val JSON_MEDIA_TYPE = "application/json".toMediaType()
     }

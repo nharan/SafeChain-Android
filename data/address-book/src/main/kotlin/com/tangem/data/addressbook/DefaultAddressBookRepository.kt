@@ -5,14 +5,6 @@ import arrow.core.flatMap
 import arrow.core.left
 import arrow.core.right
 import com.tangem.data.addressbook.store.AddressBookBlobStore
-import com.tangem.data.common.api.safeApiCall
-import com.tangem.data.common.cache.etag.ETagsStore
-import com.tangem.store.datasource.addressbook.AddressBookApi
-import com.tangem.store.datasource.addressbook.models.SyncAddressBooksRequest
-import com.tangem.store.datasource.addressbook.models.SyncAddressBooksResponse
-import com.tangem.store.datasource.addressbook.models.UpdateAddressBookRequest
-import com.tangem.core.remote.response.ApiResponseError
-import com.tangem.core.remote.response.ApiResponseError.HttpException.Code
 import com.tangem.domain.addressbook.crypto.AddressBookCipher
 import com.tangem.domain.addressbook.error.AddressBookSyncError
 import com.tangem.domain.addressbook.model.AddressBook
@@ -33,12 +25,9 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.joda.time.DateTime
 
-@Suppress("LongParameterList")
 internal class DefaultAddressBookRepository(
     private val blobStore: AddressBookBlobStore,
     private val cipher: AddressBookCipher,
-    private val addressBookApi: AddressBookApi,
-    private val eTagsStore: ETagsStore,
     private val userWalletsListRepository: UserWalletsListRepository,
     private val timestampProvider: IsoTimestampProvider,
     private val dispatchers: CoroutineDispatcherProvider,
@@ -141,52 +130,8 @@ internal class DefaultAddressBookRepository(
             }
         }
 
-    override suspend fun syncAddressBooks(): Either<AddressBookSyncError, Unit> = withContext(dispatchers.default) {
-        val wallets = userWalletsListRepository.userWalletsSync()
-        // Metadata only (wallet count) — persisted to the prod log so sync activity is traceable.
-        logger.i("Syncing address books for ${wallets.size} wallet(s)")
-        // The backend rejects more than MAX_SYNC_WALLETS per request, so sync in chunks and stop on the
-        // first failed chunk.
-        wallets.chunked(MAX_SYNC_WALLETS)
-            .fold(initial = Unit.right() as Either<AddressBookSyncError, Unit>) { acc, chunk ->
-                acc.flatMap { syncWalletsChunk(chunk) }
-            }
-    }
-
-    private suspend fun syncWalletsChunk(wallets: List<UserWallet>): Either<AddressBookSyncError, Unit> {
-        val request = SyncAddressBooksRequest(
-            wallets = wallets.map { wallet ->
-                SyncAddressBooksRequest.Wallet(
-                    walletId = wallet.walletId.stringValue,
-                    etag = eTagsStore.getSyncOrNull(wallet.walletId, ETagsStore.Key.AddressBook),
-                )
-            },
-        )
-        return safeApiCall(
-            call = {
-                val response = withContext(dispatchers.io) { addressBookApi.syncAddressBooks(request).bind() }
-                // Only wallets whose etag changed are returned; the rest keep their local copy.
-                logger.i("Sync response: ${response.items.size} updated book(s) out of ${wallets.size} requested")
-                response.items.forEach { item ->
-                    val userWalletId = UserWalletId(stringValue = item.walletId)
-                    // Metadata only (no keys/ciphertext/plaintext) — helps QA verify what the backend delivered
-                    // (esp. for cross-platform books).
-                    logger.i(
-                        "Storing synced address book for wallet ${item.walletId}: " +
-                            "updatedAt=${item.updatedAt}, nonceLen=${item.nonce.length}, " +
-                            "ciphertextLen=${item.ciphertext.length}, authTagLen=${item.authTag.length}",
-                    )
-                    blobStore.storeBlob(item.toBlob())
-                    eTagsStore.store(userWalletId, ETagsStore.Key.AddressBook, item.etag)
-                }
-                Unit.right()
-            },
-            onError = { error ->
-                logger.e("Failed to sync address books: $error")
-                error.toSyncError().left()
-            },
-        )
-    }
+    /** Hardened build: the address book lives only on the device, so there is nothing to sync with the backend */
+    override suspend fun syncAddressBooks(): Either<AddressBookSyncError, Unit> = Unit.right()
 
     private fun decryptContacts(blob: AddressBookBlob, userWallet: UserWallet): List<Contact> {
         if (!blob.isVersionCompatible) {
@@ -239,8 +184,8 @@ internal class DefaultAddressBookRepository(
     }
 
     /**
-     * Encrypts [addressBook], pushes it to the backend, and persists it locally **only** on success.
-     * On any failure (encryption, network, etag conflict, …) nothing is written locally.
+     * Encrypts [addressBook] and stores it locally. Hardened build: the encrypted book is never pushed to the
+     * backend, which would tie the walletId to the user's contacts' activity.
      */
     private suspend fun persist(userWallet: UserWallet, addressBook: AddressBook): Either<AddressBookSyncError, Unit> {
         val updatedAt = DateTime.parse(timestampProvider.now())
@@ -249,68 +194,7 @@ internal class DefaultAddressBookRepository(
                 logger.e("Failed to encrypt address book for wallet ${userWallet.walletId}: $error")
                 AddressBookSyncError.Unknown
             }
-            .flatMap { blob -> pushBlob(userWallet.walletId, blob) }
-    }
-
-    private suspend fun pushBlob(
-        userWalletId: UserWalletId,
-        blob: AddressBookBlob,
-    ): Either<AddressBookSyncError, Unit> {
-        // Absent etag means the book has not been created on the backend yet → omit If-Match to create it.
-        val eTag = eTagsStore.getSyncOrNull(userWalletId, ETagsStore.Key.AddressBook)
-        return safeApiCall(
-            call = {
-                val response = withContext(dispatchers.io) {
-                    addressBookApi.updateAddressBook(
-                        walletId = blob.walletId,
-                        eTag = eTag,
-                        body = UpdateAddressBookRequest(
-                            version = blob.version,
-                            nonce = blob.nonce,
-                            ciphertext = blob.ciphertext,
-                            authTag = blob.authTag,
-                        ),
-                    ).bind()
-                }
-                blobStore.storeBlob(blob)
-                eTagsStore.store(userWalletId, ETagsStore.Key.AddressBook, response.etag)
-                Unit.right()
-            },
-            onError = { error ->
-                logger.e("Failed to push address book for wallet $userWalletId: $error")
-                val syncError = error.toSyncError()
-                // A 412 means the local etag is stale relative to the backend. Refresh the local blob + etag so the
-                // next save attempt (user re-taps Save) starts from the current backend state. We do NOT re-push here
-                // on purpose — the write stays single-shot; the conflict is still surfaced so the UI can prompt.
-                if (syncError is AddressBookSyncError.Conflict) {
-                    syncAddressBooks()
-                }
-                syncError.left()
-            },
-        )
-    }
-
-    private fun SyncAddressBooksResponse.Item.toBlob(): AddressBookBlob = AddressBookBlob(
-        version = version,
-        walletId = walletId,
-        updatedAt = updatedAt,
-        nonce = nonce,
-        ciphertext = ciphertext,
-        authTag = authTag,
-    )
-
-    private fun ApiResponseError.toSyncError(): AddressBookSyncError = when (this) {
-        is ApiResponseError.HttpException -> when (code) {
-            Code.PRECONDITION_FAILED -> AddressBookSyncError.Conflict
-            Code.NOT_FOUND -> AddressBookSyncError.NotFound
-            Code.UNAUTHORIZED -> AddressBookSyncError.Unauthorized
-            Code.BAD_REQUEST -> AddressBookSyncError.BadRequest
-            else -> AddressBookSyncError.Unknown
-        }
-        is ApiResponseError.NetworkException,
-        is ApiResponseError.TimeoutException,
-        -> AddressBookSyncError.Network
-        is ApiResponseError.UnknownException -> AddressBookSyncError.Unknown
+            .map { blob -> blobStore.storeBlob(blob) }
     }
 
     private suspend fun findUserWallet(walletId: String): UserWallet? =
@@ -318,6 +202,5 @@ internal class DefaultAddressBookRepository(
 
     private companion object {
         const val LOG_TAG = "AddressBook"
-        const val MAX_SYNC_WALLETS = 20
     }
 }
