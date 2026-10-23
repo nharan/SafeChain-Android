@@ -27,6 +27,7 @@ import com.tangem.domain.models.scan.ProductType
 import com.tangem.domain.models.scan.ScanResponse
 import com.tangem.features.onboarding.v2.OnboardingV2FeatureToggles
 import com.tangem.operations.PreflightReadMode
+import com.tangem.operations.attestation.Attestation
 import com.tangem.operations.ScanTask
 import com.tangem.operations.backup.PrimaryCard
 import com.tangem.operations.backup.StartPrimaryCardLinkingTask
@@ -113,16 +114,36 @@ internal class ScanProductTask(
         ScanTask().run(session) { scanTaskResult ->
             when (scanTaskResult) {
                 is CompletionResult.Success -> {
-                    // It's needed because processorScanResponse.card doesn't contain the attestation
-                    // result or the existing CardWallet.derivedKeys read from the card.
-                    val processorScanResponseWithNewCard = processorScanResponse.copy(
-                        card = CardDTO(scanTaskResult.data),
-                    )
-                    callback(CompletionResult.Success(processorScanResponseWithNewCard))
+                    val manufacturerError = getManufacturerVerificationError(scanTaskResult.data.attestation.status)
+                    if (manufacturerError != null) {
+                        callback(CompletionResult.Failure(manufacturerError))
+                    } else {
+                        // It's needed because processorScanResponse.card doesn't contain the attestation
+                        // result or the existing CardWallet.derivedKeys read from the card.
+                        val processorScanResponseWithNewCard = processorScanResponse.copy(
+                            card = CardDTO(scanTaskResult.data),
+                        )
+                        callback(CompletionResult.Success(processorScanResponseWithNewCard))
+                    }
                 }
                 is CompletionResult.Failure -> callback(CompletionResult.Failure(scanTaskResult.error))
             }
         }
+    }
+
+    /**
+     * The SDK lets the user "continue" past a skipped (`VerifiedOffline`) or failed online verification. A card is
+     * only accepted once its certificate has been verified against the manufacturer key — online, or from the signed
+     * response cached on an earlier verified scan, both of which report [Attestation.Status.Verified].
+     */
+    private fun getManufacturerVerificationError(status: Attestation.Status): TangemError? = when (status) {
+        Attestation.Status.Verified -> null
+        Attestation.Status.VerifiedOffline,
+        Attestation.Status.Skipped,
+        -> TapSdkError.CardNotVerifiedByManufacturer(isVerificationUnavailable = true)
+        Attestation.Status.Failed,
+        Attestation.Status.Warning,
+        -> TapSdkError.CardNotVerifiedByManufacturer(isVerificationUnavailable = false)
     }
 
     override fun preflightReadMode(): PreflightReadMode {

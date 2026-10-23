@@ -4,6 +4,7 @@ import arrow.core.left
 import arrow.core.right
 import com.google.common.truth.Truth.assertThat
 import com.tangem.data.addressbook.store.AddressBookBlobStore
+import java.io.IOException
 import com.tangem.domain.addressbook.crypto.AddressBookCipher
 import com.tangem.domain.addressbook.error.AddressBookCryptoError
 import com.tangem.domain.addressbook.error.AddressBookSyncError
@@ -145,6 +146,22 @@ internal class DefaultAddressBookRepositoryTest {
         assertThat(result).isEqualTo(Unit.right())
         assertThat(bookSlot.captured).isEqualTo(AddressBook(listOf(contact)))
         coVerify(exactly = 1) { blobStore.storeBlob(newBlob) }
+    }
+
+    @Test
+    fun `GIVEN local storage fails WHEN saveContact THEN returns Unknown instead of throwing`() = runTest {
+        // Arrange
+        val contact = createContact(id = "c1", name = "Alice")
+        coEvery { blobStore.getBlobSync(UserWalletId(WALLET_A)) } returns null
+        val newBlob = createBlob()
+        every { cipher.encrypt(any(), userWallet, any()) } returns newBlob.right()
+        coEvery { blobStore.storeBlob(newBlob) } throws IOException("disk full")
+
+        // Act
+        val result = repository.saveContact(contact)
+
+        // Assert
+        assertThat(result).isEqualTo(AddressBookSyncError.Unknown.left())
     }
 
     @Test

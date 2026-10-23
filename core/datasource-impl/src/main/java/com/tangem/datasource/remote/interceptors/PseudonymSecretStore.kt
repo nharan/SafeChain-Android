@@ -7,7 +7,7 @@ import java.security.SecureRandom
 /**
  * Random per-install secret keying the `user-id` pseudonyms of [WalletIdPrivacyInterceptor]. Generated on first use
  * and kept in private app storage, which data-extraction rules exclude from cloud backup and device transfer, so a
- * reinstall or a new phone gets fresh, unlinkable pseudonyms.
+ * reinstall or a new phone gets new pseudonyms that do not match the old ones.
  */
 internal object PseudonymSecretStore {
 

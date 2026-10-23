@@ -9,6 +9,7 @@ import io.mockk.slot
 import io.mockk.verify
 import okhttp3.Interceptor
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Nested
@@ -37,11 +38,11 @@ internal class WalletIdPrivacyInterceptorTest {
 
         @ParameterizedTest
         @ProvideTestModels
-        fun `GIVEN request url WHEN intercept THEN blocked only for walletId requests to Tangem hosts`(
+        fun `GIVEN request WHEN intercept THEN only reviewed Tangem operations and non-Tangem hosts pass`(
             model: BlockingModel,
         ) {
             // Arrange
-            every { chain.request() } returns Request.Builder().url(model.url).build()
+            every { chain.request() } returns model.toRequest()
 
             // Act
             val error = runCatching { interceptor.intercept(chain) }.exceptionOrNull()
@@ -56,19 +57,45 @@ internal class WalletIdPrivacyInterceptorTest {
             }
         }
 
+        @Test
+        fun `GIVEN blocked walletId path WHEN intercept THEN error message does not contain the path`() {
+            // Arrange
+            every { chain.request() } returns
+                Request.Builder().url("https://api.tangem.org/v1/referral/$WALLET_ID").build()
+
+            // Act
+            val error = runCatching { interceptor.intercept(chain) }.exceptionOrNull()
+
+            // Assert
+            assertThat(error).hasMessageThat().isEqualTo(WalletIdPrivacyInterceptor.BLOCKED_MESSAGE)
+        }
+
         private fun provideTestModels() = listOf(
-            BlockingModel(url = "https://api.tangem.org/api/v1/notification-preferences/$WALLET_ID", isBlocked = true),
-            BlockingModel(url = "https://api.tangem.org/v1/referral/$WALLET_ID", isBlocked = true),
-            BlockingModel(url = "https://api.tangem.org/v1/banner/displays?walletId=$WALLET_ID", isBlocked = true),
-            BlockingModel(url = "https://api.tangem.org/v2/promotion?walletId=$WALLET_ID", isBlocked = true),
-            BlockingModel(url = "https://api.tangem.org/v1/address-books/sync", isBlocked = true),
-            BlockingModel(url = "https://api.tangem.org/api/v1/wallets/$WALLET_ID/joint-accounts", isBlocked = true),
-            BlockingModel(url = "https://api.tangem.org/v2/wallets/$WALLET_ID/accounts/archived", isBlocked = true),
-            BlockingModel(url = "https://api.tangem.org/v1/user-wallets/wallets/$WALLET_ID", isBlocked = true),
-            BlockingModel(url = "https://api.tangem.org/v1/seedphrase-notification/$WALLET_ID", isBlocked = true),
-            BlockingModel(url = "https://yield.tangem.org/v1/anything?wallet_id=$WALLET_ID", isBlocked = true),
-            BlockingModel(url = "https://api.tangem.org/v1/quotes?coinIds=bitcoin", isBlocked = false),
-            BlockingModel(url = "https://express.tangem.com/v1/assets", isBlocked = false),
+            BlockingModel(url = "$GATEWAY/api/v1/notification-preferences/$WALLET_ID", isBlocked = true),
+            BlockingModel(url = "$GATEWAY/v1/referral/$WALLET_ID", isBlocked = true),
+            BlockingModel(url = "$GATEWAY/v1/referral", method = "POST", isBlocked = true),
+            BlockingModel(url = "$GATEWAY/v1/referral/bind-wallets-by-code", method = "POST", isBlocked = true),
+            BlockingModel(url = "$GATEWAY/v1/banner/displays", isBlocked = true),
+            BlockingModel(url = "$GATEWAY/v2/promotion", isBlocked = true),
+            BlockingModel(url = "$GATEWAY/v1/address-books/sync", method = "POST", isBlocked = true),
+            BlockingModel(url = "$GATEWAY/api/v1/wallets/$WALLET_ID/card-backups", method = "POST", isBlocked = true),
+            BlockingModel(url = "$GATEWAY/v2/transaction-events", method = "POST", isBlocked = true),
+            BlockingModel(url = "$GATEWAY/promo/v1/promo-codes/activate", method = "POST", isBlocked = true),
+            BlockingModel(url = "$GATEWAY/api/authentication/v1/mobile/register", method = "POST", isBlocked = true),
+            BlockingModel(url = "$GATEWAY/api/v1/marketing/campaigns", isBlocked = true),
+            BlockingModel(url = "$GATEWAY/v1/some-endpoint-added-later", isBlocked = true),
+            BlockingModel(url = "$GATEWAY/v1/quotes", method = "POST", isBlocked = true),
+            BlockingModel(url = "$GATEWAY/v1/quotes?walletId=$WALLET_ID", isBlocked = true),
+            BlockingModel(url = "https://otlp.services.tangem.org/v1/metrics", method = "POST", isBlocked = true),
+            BlockingModel(url = "https://yield.tangem.org/api/v1/yield/markets?wallet_id=$WALLET_ID", isBlocked = true),
+            BlockingModel(url = "$GATEWAY/v1/quotes?coin_ids=bitcoin&currency_id=usd", isBlocked = false),
+            BlockingModel(url = "$GATEWAY/v1/coins/list", isBlocked = false),
+            BlockingModel(url = "$GATEWAY/v1/coins/bitcoin/history", isBlocked = false),
+            BlockingModel(url = "$GATEWAY/v1/networks/providers", isBlocked = false),
+            BlockingModel(url = "$GATEWAY/v1/news/trending", isBlocked = false),
+            BlockingModel(url = "$GATEWAY/v1/user-network-account", method = "POST", isBlocked = false),
+            BlockingModel(url = "https://express.tangem.com/v1/assets", method = "POST", isBlocked = false),
+            BlockingModel(url = "https://yield.tangem.org/api/v1/yield/markets", isBlocked = false),
             BlockingModel(url = "https://api.us.paera.com/v1/customer/wallets/1", isBlocked = false),
             BlockingModel(url = "https://nottangem.org/v1/referral/$WALLET_ID", isBlocked = false),
         )
@@ -124,9 +151,15 @@ internal class WalletIdPrivacyInterceptorTest {
         }
     }
 
-    data class BlockingModel(val url: String, val isBlocked: Boolean)
+    data class BlockingModel(val url: String, val isBlocked: Boolean, val method: String = "GET") {
+        fun toRequest(): Request = Request.Builder()
+            .url(url)
+            .method(method, if (method == "GET") null else "{}".toRequestBody())
+            .build()
+    }
 
     private companion object {
+        const val GATEWAY = "https://api.tangem.org"
         const val WALLET_ID = "A1B2C3D4E5F60718293A4B5C6D7E8F90A1B2C3D4E5F60718293A4B5C6D7E8F90"
         const val OTHER_WALLET_ID = "0F1E2D3C4B5A69788796A5B4C3D2E1F00F1E2D3C4B5A69788796A5B4C3D2E1F0"
         const val PSEUDONYM_HEX_LENGTH = 64

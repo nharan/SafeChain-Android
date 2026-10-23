@@ -17,6 +17,7 @@ import com.tangem.domain.common.wallets.UserWalletsListRepository
 import com.tangem.domain.models.wallet.UserWallet
 import com.tangem.domain.models.wallet.UserWalletId
 import com.tangem.utils.coroutines.CoroutineDispatcherProvider
+import com.tangem.utils.coroutines.runSuspendCatching
 import com.tangem.utils.logging.TangemLogger
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.*
@@ -194,7 +195,18 @@ internal class DefaultAddressBookRepository(
                 logger.e("Failed to encrypt address book for wallet ${userWallet.walletId}: $error")
                 AddressBookSyncError.Unknown
             }
-            .map { blob -> blobStore.storeBlob(blob) }
+            .flatMap { blob -> store(blob) }
+    }
+
+    private suspend fun store(blob: AddressBookBlob): Either<AddressBookSyncError, Unit> {
+        return runSuspendCatching { blobStore.storeBlob(blob) }
+            .fold(
+                onSuccess = { Unit.right() },
+                onFailure = { error ->
+                    logger.e("Failed to store address book for wallet ${blob.walletId}", error)
+                    AddressBookSyncError.Unknown.left()
+                },
+            )
     }
 
     private suspend fun findUserWallet(walletId: String): UserWallet? =
