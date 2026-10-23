@@ -655,6 +655,12 @@ sealed class AppRoute(val path: String) : Route {
         val userWalletId: UserWalletId? = null,
     ) : AppRoute(path = "/polymarket")
 
+    /** SafeChain Protected Savings (Sepolia), with the wallet's card as the spending key. */
+    @Serializable
+    data class SafeChain(
+        val userWalletId: UserWalletId,
+    ) : AppRoute(path = "/safechain")
+
     @Serializable
     data class NewsDetails(val newsId: Int) : AppRoute(path = "/news_details/$newsId")
 

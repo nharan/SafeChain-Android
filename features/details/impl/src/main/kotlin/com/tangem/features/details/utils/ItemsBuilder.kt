@@ -5,6 +5,7 @@ import com.tangem.core.decompose.di.ModelScoped
 import com.tangem.core.decompose.navigation.Router
 import com.tangem.core.ui.components.block.model.BlockUM
 import com.tangem.core.ui.extensions.resourceReference
+import com.tangem.core.ui.extensions.stringReference
 import com.tangem.domain.models.wallet.UserWalletId
 import com.tangem.domain.settings.HotWalletRestrictionManager
 import com.tangem.features.details.entity.DetailsItemUM
@@ -43,7 +44,7 @@ internal class ItemsBuilder @Inject constructor(
         }
 
         buildShopBlock(onBuyClick).let(::add)
-        buildSettingsBlock().let(::add)
+        buildSettingsBlock(userWalletId).let(::add)
         buildSupportBlock(onSupportClick = onSupportClick).let(::add)
     }.toImmutableList()
 
@@ -138,9 +139,19 @@ internal class ItemsBuilder @Inject constructor(
         ),
     )
 
-    private fun buildSettingsBlock(): DetailsItemUM = DetailsItemUM.Basic(
+    private fun buildSettingsBlock(userWalletId: UserWalletId): DetailsItemUM = DetailsItemUM.Basic(
         id = "settings",
         items = buildList {
+            // SafeChain: Protected Savings on Sepolia, with this wallet's card as the spending key.
+            DetailsItemUM.Basic.Item(
+                id = "safechain_savings",
+                block = BlockUM(
+                    text = stringReference("SafeChain Protected Savings (Sepolia)"),
+                    iconRes = R.drawable.ic_tangem_24,
+                    onClick = { router.push(AppRoute.SafeChain(userWalletId)) },
+                ),
+            ).let(::add)
+
             DetailsItemUM.Basic.Item(
                 id = "app_settings",
                 block = BlockUM(

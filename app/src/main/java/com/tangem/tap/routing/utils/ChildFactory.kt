@@ -55,6 +55,7 @@ import com.tangem.features.moneyaccount.onboarding.component.MoneyAccountOnboard
 import com.tangem.features.wallet.WalletEntryComponent
 import com.tangem.features.walletconnect.components.WalletConnectEntryComponent
 import com.tangem.features.polymarket.api.PolymarketComponent
+import com.tangem.features.safechain.SafeChainComponent
 import com.tangem.features.yield.supply.api.YieldSupplyEntryComponent
 import com.tangem.tap.features.details.ui.appcurrency.api.AppCurrencySelectorComponent
 import com.tangem.tap.features.details.ui.appsettings.api.AppSettingsComponent
@@ -138,6 +139,7 @@ internal class ChildFactory @Inject constructor(
     private val surveyComponentFactory: SurveyComponent.Factory,
     private val yieldSupplyEntryComponentFactory: YieldSupplyEntryComponent.Factory,
     private val polymarketComponentFactory: PolymarketComponent.Factory,
+    private val safeChainComponentFactory: SafeChainComponent.Factory,
     private val feedEntryComponentFactory: FeedEntryComponent.Factory,
     private val addressBookComponentFactory: AddressBookComponent.Factory,
 ) {
@@ -839,6 +841,13 @@ internal class ChildFactory @Inject constructor(
                         apy = route.apy,
                     ),
                     componentFactory = yieldSupplyEntryComponentFactory,
+                )
+            }
+            is AppRoute.SafeChain -> {
+                createComponentChild(
+                    context = context,
+                    params = SafeChainComponent.Params(userWalletId = route.userWalletId),
+                    componentFactory = safeChainComponentFactory,
                 )
             }
             is AppRoute.Polymarket -> {
