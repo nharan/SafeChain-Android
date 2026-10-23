@@ -3,17 +3,15 @@ package com.tangem.grow.datasource.config
 import com.tangem.core.remote.config.ApiConfig
 import com.tangem.core.remote.config.ApiEnvironment
 import com.tangem.core.remote.config.ApiEnvironmentConfig
-import com.tangem.core.remote.header.CardAuthHeaderProvider
 import com.tangem.core.remote.header.RequestHeader
 
 import com.tangem.grow.datasource.BuildConfig
 import com.tangem.utils.ProviderSuspend
 import com.tangem.utils.info.AppInfoProvider
 
-/** YieldSupply [ApiConfig] */
+/** YieldSupply [ApiConfig]. Hardened build: no `card_id` / `card_public_key` headers. */
 class YieldSupply(
     private val growEnvironmentConfig: GrowEnvironmentConfig,
-    private val cardAuthHeader: CardAuthHeaderProvider,
     private val appInfoProvider: AppInfoProvider,
 ) : ApiConfig() {
 
@@ -70,7 +68,6 @@ class YieldSupply(
             getApiKey(apiEnvironment)
         })
         putAll(from = RequestHeader.AppVersionPlatformHeaders(appInfoProvider).values)
-        putAll(from = cardAuthHeader.get().values)
     }
 
     private fun getApiKey(apiEnvironment: ApiEnvironment): String {

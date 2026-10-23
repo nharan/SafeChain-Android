@@ -6,7 +6,6 @@ import com.tangem.core.remote.Timeouts
 import com.tangem.core.remote.build
 import com.tangem.core.remote.config.ApiConfig
 import com.tangem.core.remote.config.TangemGatewayApiConfig
-import com.tangem.core.remote.header.CardAuthHeaderProvider
 import com.tangem.core.remote.header.TangemApiKeyHeaderProvider
 import com.tangem.core.remote.moshi.NetworkMoshiConfigurer
 import com.tangem.datasource.api.tangemTech.TangemTechApi
@@ -43,12 +42,10 @@ internal object StoreDatasourceModule {
     @StringKey(TangemGatewayApiConfig.TANGEM_TECH_KEY)
     fun provideTangemTechConfig(
         apiKeyHeaderProvider: TangemApiKeyHeaderProvider,
-        cardAuthHeaderProvider: CardAuthHeaderProvider,
         appInfoProvider: AppInfoProvider,
     ): ApiConfig {
         return TangemTech(
             apiKeyHeader = apiKeyHeaderProvider,
-            cardAuthHeader = cardAuthHeaderProvider,
             appInfoProvider = appInfoProvider,
         )
     }

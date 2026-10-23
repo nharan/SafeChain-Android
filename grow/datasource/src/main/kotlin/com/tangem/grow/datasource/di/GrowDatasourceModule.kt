@@ -9,7 +9,6 @@ import com.tangem.core.remote.Timeouts
 import com.tangem.core.remote.build
 import com.tangem.core.remote.config.ApiConfig
 import com.tangem.core.remote.config.TangemGatewayApiConfig
-import com.tangem.core.remote.header.CardAuthHeaderProvider
 import com.tangem.core.remote.moshi.NetworkMoshi
 import com.tangem.core.remote.moshi.NetworkMoshiConfigurer
 import com.tangem.datasource.utils.AppDataStoreFactory
@@ -217,12 +216,10 @@ internal object GrowDatasourceModule {
     @StringKey(YieldSupply.KEY)
     fun provideYieldSupplyConfig(
         growEnvironmentConfig: GrowEnvironmentConfig,
-        cardAuthHeaderProvider: CardAuthHeaderProvider,
         appInfoProvider: AppInfoProvider,
     ): ApiConfig {
         return YieldSupply(
             growEnvironmentConfig = growEnvironmentConfig,
-            cardAuthHeader = cardAuthHeaderProvider,
             appInfoProvider = appInfoProvider,
         )
     }

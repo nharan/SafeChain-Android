@@ -115,6 +115,16 @@
         <meta-data
             android:name="google_analytics_ssaid_collection_enabled"
             android:value="false" />
+        <!-- No FCM/HMS token or Firebase Installation is created at startup; Firebase Sessions stays off -->
+        <meta-data
+            android:name="firebase_messaging_auto_init_enabled"
+            android:value="false" />
+        <meta-data
+            android:name="firebase_sessions_enabled"
+            android:value="false" />
+        <meta-data
+            android:name="push_kit_auto_init_enabled"
+            android:value="false" />
 
         <!--
             Use android:launchMode="singleInstance" to ensure a single MainActivity instance in its own task;

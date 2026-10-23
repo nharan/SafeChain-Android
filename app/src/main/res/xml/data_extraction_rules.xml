@@ -1,13 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    Hardened build: android:allowBackup="false" does not stop device-to-device transfer on Android 12+,
+    so every domain is excluded explicitly. Wallet stores and encrypted hot-wallet key blobs must never be
+    copied off the device by cloud backup or device transfer.
+-->
 <data-extraction-rules>
     <cloud-backup>
-        <exclude
-            domain="sharedpref"
-            path="appsflyer-data" />
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+        <exclude domain="device_root" path="." />
+        <exclude domain="device_file" path="." />
+        <exclude domain="device_database" path="." />
+        <exclude domain="device_sharedpref" path="." />
     </cloud-backup>
     <device-transfer>
-        <exclude
-            domain="sharedpref"
-            path="appsflyer-data" />
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
+        <exclude domain="device_root" path="." />
+        <exclude domain="device_file" path="." />
+        <exclude domain="device_database" path="." />
+        <exclude domain="device_sharedpref" path="." />
     </device-transfer>
 </data-extraction-rules>

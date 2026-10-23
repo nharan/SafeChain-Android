@@ -4,17 +4,19 @@ import com.tangem.core.remote.config.ApiConfig
 import com.tangem.core.remote.config.ApiEnvironment
 import com.tangem.core.remote.config.ApiEnvironmentConfig
 import com.tangem.core.remote.config.TangemGatewayApiConfig
-import com.tangem.core.remote.header.CardAuthHeaderProvider
 import com.tangem.core.remote.header.RequestHeader
 import com.tangem.core.remote.header.TangemApiKeyHeaderProvider
 import com.tangem.store.datasource.BuildConfig
 import com.tangem.utils.ProviderSuspend
 import com.tangem.utils.info.AppInfoProvider
 
-/** TangemTech [ApiConfig] — the main Tangem gateway (api.tangem.org). */
+/**
+ * TangemTech [ApiConfig] — the main Tangem gateway (api.tangem.org).
+ *
+ * Hardened build: no `card_id` / `card_public_key` headers, which would tie every request to the user's card.
+ */
 class TangemTech(
     private val apiKeyHeader: TangemApiKeyHeaderProvider,
-    private val cardAuthHeader: CardAuthHeaderProvider,
     private val appInfoProvider: AppInfoProvider,
 ) : TangemGatewayApiConfig() {
 
@@ -45,6 +47,5 @@ class TangemTech(
     private fun createHeaders(environment: ApiEnvironment): Map<String, ProviderSuspend<String>> = buildMap {
         putAll(from = apiKeyHeader.forEnvironment(environment).values)
         putAll(from = RequestHeader.AppVersionPlatformHeaders(appInfoProvider).values)
-        putAll(from = cardAuthHeader.get().values)
     }
 }

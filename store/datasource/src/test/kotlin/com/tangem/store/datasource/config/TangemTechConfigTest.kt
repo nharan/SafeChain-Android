@@ -29,12 +29,6 @@ internal class TangemTechConfigTest {
 
         config = TangemTech(
             apiKeyHeader = { RequestHeader("api-key" to ProviderSuspend { TANGEM_API_KEY }) },
-            cardAuthHeader = {
-                RequestHeader(
-                    "card_id" to ProviderSuspend { APP_CARD_ID },
-                    "card_public_key" to ProviderSuspend { APP_CARD_PUBLIC_KEY },
-                )
-            },
             appInfoProvider = appInfoProvider,
         )
     }
@@ -48,9 +42,9 @@ internal class TangemTechConfigTest {
     fun `GIVEN config WHEN read environments THEN base urls match the tangem gateway`() {
         // Arrange
         val expected = mapOf(
-            ApiEnvironment.DEV to "[REDACTED_ENV_URL]",
-            ApiEnvironment.STAGE to "[REDACTED_ENV_URL]",
-            ApiEnvironment.MOCK to "[REDACTED_ENV_URL]",
+            ApiEnvironment.DEV to LOCALHOST_URL,
+            ApiEnvironment.STAGE to LOCALHOST_URL,
+            ApiEnvironment.MOCK to LOCALHOST_URL,
             ApiEnvironment.PROD to "https://api.tangem.org/",
         )
 
@@ -62,7 +56,7 @@ internal class TangemTechConfigTest {
     }
 
     @Test
-    fun `GIVEN prod environment WHEN read headers THEN they carry api key, card auth and app info`() {
+    fun `GIVEN prod environment WHEN read headers THEN they carry api key and app info but no card auth`() {
         // Arrange
         val prod = config.environmentConfigs.first { it.environment == ApiEnvironment.PROD }
         val resolved = prod.headers.mapValues { runBlocking { it.value() } }
@@ -74,8 +68,6 @@ internal class TangemTechConfigTest {
         assertThat(deterministic).isEqualTo(
             mapOf(
                 "api-key" to TANGEM_API_KEY,
-                "card_id" to APP_CARD_ID,
-                "card_public_key" to APP_CARD_PUBLIC_KEY,
                 "system_version" to OS_VERSION,
                 "version" to VERSION_NAME,
                 "platform" to "android",
@@ -89,9 +81,8 @@ internal class TangemTechConfigTest {
     private companion object {
 
         const val TIMEZONE_HEADER = "timezone"
+        const val LOCALHOST_URL = "https://localhost/"
         const val TANGEM_API_KEY = "tangem_api_key"
-        const val APP_CARD_ID = "app_card_id"
-        const val APP_CARD_PUBLIC_KEY = "Bearer app_public_key"
         const val OS_VERSION = "Android 16"
         const val VERSION_NAME = "debug"
         const val LANGUAGE = "en-US"

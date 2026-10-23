@@ -17,6 +17,7 @@ import com.tangem.core.analytics.models.ExceptionAnalyticsEvent
 import com.tangem.crypto.bip39.Wordlist
 import com.tangem.data.card.sdk.CardSdkOwner
 import com.tangem.data.card.sdk.CardSdkProvider
+import com.tangem.operations.attestation.AttestationTask
 import com.tangem.core.remote.config.ApiEnvironmentConfig
 import com.tangem.core.remote.header.RequestHeader
 import com.tangem.core.remote.header.TangemApiKeyHeaderProvider
@@ -225,6 +226,9 @@ internal class DefaultCardSdkProvider @Inject constructor(
 
     private fun createConfig(): Config {
         return Config(
+            // Hardened build: verify the card's attestation against the embedded manufacturer key only. The SDK
+            // default (Normal) also sends cardId + cardPublicKey to Tangem's verification server on every scan.
+            attestationMode = AttestationTask.Mode.Offline,
             linkedTerminal = true,
             filter = CardFilter(
                 allowedCardTypes = FirmwareVersion.FirmwareType.entries.toList(),
