@@ -127,6 +127,9 @@ internal class SafeChainModel @Inject constructor(
     private var snapshotBlock = BigInteger.ZERO
     private var snapshotReadAtMs = 0L
     private var health: RpcHealth? = null
+
+    /** Readings in a row where one data source failed; one blip (a rate limit) isn't worth a banner. */
+    private var degradedReads = 0
     private var salt: ByteArray? = null
     private var busy = false
 
@@ -193,6 +196,7 @@ internal class SafeChainModel @Inject constructor(
             snapshot = checked.value
             snapshotBlock = checked.block.number
             health = checked.health
+            degradedReads = if (checked.health is RpcHealth.Degraded) degradedReads + 1 else 0
             snapshotReadAtMs = System.currentTimeMillis()
             phoneKey?.let { key ->
                 phoneKeyWei = endpoints.firstNotNullOfOrNull { runCatching { it.balance(key, checked.block.number) }.getOrNull() } ?: phoneKeyWei
@@ -247,7 +251,9 @@ internal class SafeChainModel @Inject constructor(
                 phoneKeyLow = phoneKey != null && phoneKeyWei < PHONE_GAS_LOW,
                 health = when (val h = health) {
                     RpcHealth.Agree, null -> HealthUM.Agree
-                    is RpcHealth.Degraded -> HealthUM.Degraded(h.problems.joinToString(" · "))
+                    // Disagreement always shows at once; a source that's down shows once it stays down.
+                    is RpcHealth.Degraded ->
+                        if (degradedReads >= DEGRADED_READS_TO_WARN) HealthUM.Degraded(h.problems.joinToString(" · ")) else HealthUM.Agree
                     is RpcHealth.Disagree -> HealthUM.Disagree(h.detail)
                 },
                 vault = vaultUM,
@@ -1269,7 +1275,9 @@ internal class SafeChainModel @Inject constructor(
     private companion object {
         const val TIMEOUT_S = 15L
         const val TICK_MS = 1_000L
-        const val REFRESH_MS = 15_000L
+        /** As the web explorer on public chains: free endpoints rate-limit faster polling. */
+        const val REFRESH_MS = 30_000L
+        const val DEGRADED_READS_TO_WARN = 2
         const val HOUR = 3_600L
         const val MIN_HOURS = 24L
         const val MAX_HOURS = 720L

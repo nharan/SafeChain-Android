@@ -1,6 +1,7 @@
 package com.tangem.feature.safechain.chain
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -54,7 +55,26 @@ internal class OkHttpEthRpc(override val url: String, private val http: OkHttpCl
     private val ids = AtomicLong(1)
     private val json = Json { ignoreUnknownKeys = true }
 
-    private suspend fun rpc(method: String, params: JsonArray): JsonElement = withContext(Dispatchers.IO) {
+    /**
+     * One JSON-RPC request. Free public endpoints rate-limit bursts (HTTP 429) and blip (502–504); those are
+     * retried with a short backoff before the endpoint counts as failing. Errors the node itself returns are
+     * never retried.
+     */
+    private suspend fun rpc(method: String, params: JsonArray): JsonElement {
+        var attempt = 0
+        while (true) {
+            try {
+                return once(method, params)
+            } catch (e: Busy) {
+                if (++attempt > RETRY_DELAYS_MS.size) throw RpcError("$method: HTTP ${e.code}")
+                delay(e.retryAfterMs ?: RETRY_DELAYS_MS[attempt - 1])
+            }
+        }
+    }
+
+    private class Busy(val code: Int, val retryAfterMs: Long?) : Exception()
+
+    private suspend fun once(method: String, params: JsonArray): JsonElement = withContext(Dispatchers.IO) {
         val body = buildJsonObject {
             put("jsonrpc", "2.0")
             put("id", ids.getAndIncrement())
@@ -63,6 +83,10 @@ internal class OkHttpEthRpc(override val url: String, private val http: OkHttpCl
         }.toString().toRequestBody(JSON_MEDIA)
         http.newCall(Request.Builder().url(url).post(body).build()).execute().use { res ->
             val text = res.body?.string().orEmpty()
+            if (res.code in RETRYABLE) {
+                val after = res.header("Retry-After")?.toLongOrNull()?.takeIf { it in 1..MAX_RETRY_AFTER_S }?.times(MS_PER_S)
+                throw Busy(res.code, after)
+            }
             if (!res.isSuccessful) throw RpcError("$method: HTTP ${res.code}")
             val obj = json.parseToJsonElement(text).jsonObject
             obj["error"]?.let { throw RpcError("$method: ${it.jsonObject["message"]?.jsonPrimitive?.content ?: it}") }
@@ -150,5 +174,9 @@ internal class OkHttpEthRpc(override val url: String, private val http: OkHttpCl
 
     private companion object {
         val JSON_MEDIA = "application/json".toMediaType()
+        val RETRYABLE = setOf(429, 502, 503, 504)
+        val RETRY_DELAYS_MS = listOf(500L, 1_500L)
+        const val MAX_RETRY_AFTER_S = 3L
+        const val MS_PER_S = 1_000L
     }
 }
