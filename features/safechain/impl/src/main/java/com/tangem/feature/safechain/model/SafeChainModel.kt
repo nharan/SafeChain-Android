@@ -234,7 +234,7 @@ internal class SafeChainModel @Inject constructor(
                             balance = money(v.balance),
                             available = money(v.available),
                             canMove = cur != null && !v.locked && v.available.signum() > 0,
-                            moving = v.withdrawals.filter { it.state in 1..2 }.map { it.toUM(me, now, v.delaySeconds, s) },
+                            moving = v.withdrawals.filter { it.state in 1..2 }.map { it.toUM(me, now, v.delaySeconds, s, v.address) },
                         )
                     },
             )
@@ -278,8 +278,8 @@ internal class SafeChainModel @Inject constructor(
             backupIsThisPhone = backupIsThisPhone,
             haven = haven.takeIf { it != ZERO_ADDRESS },
             alerts = alerts,
-            pending = withdrawals.filter { it.state in 1..2 }.map { it.toUM(me, now, delaySeconds, s) },
-            activity = activity.map { it.toUM(me, s) },
+            pending = withdrawals.filter { it.state in 1..2 }.map { it.toUM(me, now, delaySeconds, s, address) },
+            activity = activity.map { it.toUM(me, s, address) },
             backupChange = policy?.takeIf { it.kind == POLICY_NEW_RECOVERY }?.let { p ->
                 BackupChangeUM(
                     newBackup = p.newAddress,
@@ -293,7 +293,7 @@ internal class SafeChainModel @Inject constructor(
         )
     }
 
-    private fun WithdrawalView.toUM(me: String, now: Long, holdSeconds: Long, s: AccountSnapshot): WithdrawalUM {
+    private fun WithdrawalView.toUM(me: String, now: Long, holdSeconds: Long, s: AccountSnapshot, vault: String): WithdrawalUM {
         val span = (deadline - requestedAt).coerceAtLeast(holdSeconds).coerceAtLeast(1)
         return WithdrawalUM(
             id = id.toString(),
@@ -309,10 +309,11 @@ internal class SafeChainModel @Inject constructor(
             canCancel = state == 1 && (!toHaven || initiator.equals(me, ignoreCase = true)),
             canRelease = state == 2,
             disputed = disputed,
+            url = SepoliaConfig.explorerWithdrawal(vault, id.toString()),
         )
     }
 
-    private fun ActivityView.toUM(me: String, s: AccountSnapshot): ActivityUM {
+    private fun ActivityView.toUM(me: String, s: AccountSnapshot, vault: String): ActivityUM {
         val plus = amount?.let { "+${fmt(it)}" }
         val minus = amount?.let { "−${fmt(it)}" }
         val who = when {
@@ -345,7 +346,9 @@ internal class SafeChainModel @Inject constructor(
         }
         // Block times are about 12 s apart on Sepolia; good enough for "how long ago".
         val ago = (snapshotBlock - block).toLong().coerceAtLeast(0) * SECONDS_PER_BLOCK
-        return ActivityUM(row.title, row.detail.trim(), ago(ago), row.amount, SepoliaConfig.EXPLORER_TX + txHash, row.icon, row.tone)
+        // A payment opens its own page (countdown, destination, address check); anything else its transaction.
+        val url = withdrawalId?.let { SepoliaConfig.explorerWithdrawal(vault, it.toString()) } ?: (SepoliaConfig.EXPLORER_TX + txHash)
+        return ActivityUM(row.title, row.detail.trim(), ago(ago), row.amount, url, row.icon, row.tone)
     }
 
     // ----------------------------------------------------------------- the guided flow

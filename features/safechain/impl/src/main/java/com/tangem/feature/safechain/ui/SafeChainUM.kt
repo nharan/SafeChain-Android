@@ -98,6 +98,8 @@ internal data class WithdrawalUM(
     val canCancel: Boolean,
     val canRelease: Boolean,
     val disputed: Boolean,
+    /** Its page on the SafeChain explorer. */
+    val url: String,
 )
 
 @Immutable

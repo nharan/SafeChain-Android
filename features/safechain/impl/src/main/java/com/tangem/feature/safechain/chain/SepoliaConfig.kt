@@ -21,7 +21,14 @@ internal object SepoliaConfig {
     const val ESCROW = "0x0c57772f68D4Ff4c432270b616F08c4884507913"
     const val START_BLOCK = 11_979_489L
 
-    const val EXPLORER_TX = "https://sepolia.etherscan.io/tx/"
+    /**
+     * SafeChain's own explorer (SafeChain/web, hosted): it shows a payment's countdown, destination and the
+     * "is this the right address?" check, which a general block explorer can't.
+     */
+    const val EXPLORER = "https://safechain.rep.run/#/explorer"
+    const val EXPLORER_TX = "$EXPLORER/tx/"
+
+    fun explorerWithdrawal(vault: String, id: String) = "$EXPLORER/vault/$vault/w/$id"
 
     /**
      * Where the recovery device signs its consent: the hosted SafeChain site's consent page

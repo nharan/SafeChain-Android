@@ -88,7 +88,6 @@ private val BlueBg = Color(0x1F3B82F6)
 
 private val CardShape = RoundedCornerShape(20.dp)
 private val PillShape = RoundedCornerShape(50)
-private const val EXPLORER = "https://safechain.rep.run/#/explorer"
 private const val DISABLED_ALPHA = 0.45f
 
 /** A page like a bank's: Checking and Savings, what's on its way, what happened, and how it's protected. */
@@ -338,9 +337,14 @@ private fun QuickAction(label: String, @DrawableRes icon: Int, enabled: Boolean,
 
 @Composable
 private fun Upcoming(items: List<WithdrawalUM>, actions: SafeChainActions) = Card {
+    val uri = LocalUriHandler.current
     items.forEachIndexed { i, w ->
         if (i > 0) Divider()
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(
+            Modifier.clickable { runCatching { uri.openUri(w.url) } },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             Badge(R.drawable.ic_arrow_up_24, Amber, AmberBg)
             Column(Modifier.weight(1f)) {
                 Text(
@@ -494,7 +498,7 @@ private fun Protection(state: SafeChainUM, v: VaultUM, actions: SafeChainActions
             if (v.backupIsThisPhone) KeyValue("Emergency fees on this phone", state.phoneKeyGas)
             KeyValue("Network fees on your card", state.gasBalance)
             val uri = LocalUriHandler.current
-            TextButton(text = "Check it on SafeChain Explorer", onClick = { runCatching { uri.openUri("$EXPLORER/vault/${v.address}") } })
+            TextButton(text = "Check it on SafeChain Explorer", onClick = { runCatching { uri.openUri("${SepoliaConfig.EXPLORER}/vault/${v.address}") } })
             if (v.haven != null && v.isPrimary) {
                 SecondaryButton(text = "Move everything to your safe haven", onClick = actions::onMoveToHaven, modifier = Modifier.fillMaxWidth())
             }
