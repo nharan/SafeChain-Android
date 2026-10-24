@@ -246,25 +246,27 @@ object HqTransparencyInterceptor : Interceptor {
         }
         sessionEntries.add(entry)
 
-        if (entry.isCardAttestationCall) {
-            pendingCardHqEntries.add(entry)
-            mainHandler.post { showOrUpdateCardHqDialog() }
-        } else if (entry.isTangemHqCall) {
-            val now = System.currentTimeMillis()
-            if (now - lastToastTimeMs > TOAST_COOLDOWN_MS) {
-                lastToastTimeMs = now
-                mainHandler.post {
-                    val activity = currentActivityRef?.get() ?: return@post
-                    if (!activity.isFinishing && !activity.isDestroyed) {
-                        Toast.makeText(
-                            activity.applicationContext,
-                            "📡 HQ Public API: ${entry.method} ${entry.host}${entry.path}",
-                            Toast.LENGTH_SHORT,
-                        ).show()
-                    }
-                }
-            }
-        }
+        // On-screen alerts are switched off for now (demo recording): requests are still recorded in RAM above.
+        // To bring back the "Data Sent to Tangem HQ" dialog and the "HQ Public API" toasts, uncomment below.
+        // if (entry.isCardAttestationCall) {
+        //     pendingCardHqEntries.add(entry)
+        //     mainHandler.post { showOrUpdateCardHqDialog() }
+        // } else if (entry.isTangemHqCall) {
+        //     val now = System.currentTimeMillis()
+        //     if (now - lastToastTimeMs > TOAST_COOLDOWN_MS) {
+        //         lastToastTimeMs = now
+        //         mainHandler.post {
+        //             val activity = currentActivityRef?.get() ?: return@post
+        //             if (!activity.isFinishing && !activity.isDestroyed) {
+        //                 Toast.makeText(
+        //                     activity.applicationContext,
+        //                     "📡 HQ Public API: ${entry.method} ${entry.host}${entry.path}",
+        //                     Toast.LENGTH_SHORT,
+        //                 ).show()
+        //             }
+        //         }
+        //     }
+        // }
     }
 
     private fun showOrUpdateCardHqDialog() {
