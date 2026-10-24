@@ -16,16 +16,23 @@ import java.math.BigInteger
 
 /**
  * DEBUG BUILDS ONLY: a pretend Sepolia, so every SafeChain screen and sheet can be tried on an emulator, which
- * has no NFC for the card. Nothing here touches the network or a key. It follows the vault contract's rules
- * for the calls this app makes (requests, cancels, locks, releases, deposits, backup changes), closely enough
- * to see each state; the real contracts remain the authority.
+ * has no NFC for the card. Nothing here touches the network or a key. It follows the contracts' rules for the
+ * calls this app makes (requests, cancels, locks, releases, deposits, protected payments, backup changes) for
+ * each token, closely enough to see each state; the real contracts remain the authority.
  */
 internal class DemoChain(private val now: () -> Long = { System.currentTimeMillis() / 1000 }) {
 
     class Revert(reason: String) : Exception("execution reverted: $reason")
 
+    /** Token amounts, keyed by lowercase token address. */
+    private class Purse : HashMap<String, BigInteger>() {
+        fun of(token: String): BigInteger = this[token.lowercase()] ?: BigInteger.ZERO
+        fun add(token: String, amount: BigInteger) { this[token.lowercase()] = of(token) + amount }
+    }
+
     private class W(
         val id: BigInteger,
+        val token: String,
         val to: String,
         val amount: BigInteger,
         val requestedAt: Long,
@@ -36,7 +43,7 @@ internal class DemoChain(private val now: () -> Long = { System.currentTimeMilli
     )
 
     private class V(val address: String, var primary: String, var recovery: String, val delay: Long) {
-        var balance: BigInteger = BigInteger.ZERO
+        val balances = Purse()
         var locked = false
         var epoch = 0
         val lockedAt = mutableMapOf<Int, Long>()
@@ -51,6 +58,7 @@ internal class DemoChain(private val now: () -> Long = { System.currentTimeMilli
         val id: BigInteger,
         val sender: String,
         val recipient: String,
+        val token: String,
         val amount: BigInteger,
         val createdAt: Long,
         val deadline: Long,
@@ -58,31 +66,37 @@ internal class DemoChain(private val now: () -> Long = { System.currentTimeMilli
     )
 
     private var block = BigInteger.valueOf(START_BLOCK)
-    private var cardTokens = units(17_700)
-    private var cardWei = BigInteger.TEN.pow(18).multiply(BigInteger.valueOf(4))
+    private val card = Purse().apply {
+        add(USDC, usdc(250))
+        add(PWTEST, units(17_700))
+    }
+    private var cardWei = BigInteger.TEN.pow(17).multiply(BigInteger.valueOf(4)) // 0.4 ETH
     private val wei = mutableMapOf(PHONE.lowercase() to BigInteger.TEN.pow(15).multiply(BigInteger.TWO))
     private val vaults = mutableListOf<V>()
-    private var escrowAllowance = BigInteger.ZERO
+    private val allowances = Purse()
     private val payments = mutableListOf<P>()
     private val checking = mutableListOf<ActivityView>()
 
     init {
         // Someone is sending this card a protected payment: an incoming row in Upcoming.
         val t = now() - 2 * HOUR
-        payments += P(BigInteger.ONE, FRIEND, CARD, units(50), t, t + 6 * HOUR)
-        checking += event(ActivityView.Kind.PaymentReceived, id = BigInteger.ONE, amount = units(50), address = FRIEND, ago = 2 * HOUR)
+        payments += P(BigInteger.ONE, FRIEND, CARD, USDC, usdc(50), t, t + 6 * HOUR)
+        checking += event(ActivityView.Kind.PaymentReceived, id = BigInteger.ONE, token = USDC, amount = usdc(50), address = FRIEND, ago = 2 * HOUR)
+        checking += event(ActivityView.Kind.CheckingReceived, token = USDC, amount = usdc(250), address = FRIEND, ago = 5 * HOUR)
         // A previous vault backed by another wallet, still holding money: the "move it here" banner.
         vaults += V(OLD_VAULT, CARD, OTHER_WALLET, DAY).apply {
-            balance = units(2_000)
-            activity += event(ActivityView.Kind.Deposited, amount = units(2_000), by = CARD, ago = 3 * DAY)
+            balances.add(PWTEST, units(2_000))
+            activity += event(ActivityView.Kind.Deposited, token = PWTEST, amount = units(2_000), by = CARD, ago = 3 * DAY)
         }
         // The current vault, backed by this phone, with one payment on its way: the cancel and lock flows.
         vaults += V(VAULT, CARD, PHONE, DAY).apply {
-            balance = units(300)
-            activity += event(ActivityView.Kind.Deposited, amount = units(300), by = CARD, ago = 2 * HOUR)
+            balances.add(USDC, usdc(200))
+            balances.add(PWTEST, units(300))
+            activity += event(ActivityView.Kind.Deposited, token = PWTEST, amount = units(300), by = CARD, ago = 3 * HOUR)
+            activity += event(ActivityView.Kind.Deposited, token = USDC, amount = usdc(200), by = CARD, ago = 2 * HOUR)
             val t = now() - HOUR
-            withdrawals += W(BigInteger.ONE, RANDOM_ADDRESS, units(100), t, t + DAY, CARD, epoch)
-            activity += event(ActivityView.Kind.WithdrawalRequested, id = BigInteger.ONE, amount = units(100), address = RANDOM_ADDRESS, by = CARD, ago = HOUR)
+            withdrawals += W(BigInteger.ONE, USDC, RANDOM_ADDRESS, usdc(100), t, t + DAY, CARD, epoch)
+            activity += event(ActivityView.Kind.WithdrawalRequested, id = BigInteger.ONE, token = USDC, amount = usdc(100), address = RANDOM_ADDRESS, by = CARD, ago = HOUR)
         }
     }
 
@@ -91,7 +105,7 @@ internal class DemoChain(private val now: () -> Long = { System.currentTimeMilli
     fun snapshot(account: String): AccountSnapshot = AccountSnapshot(
         address = account,
         ethBalance = cardWei,
-        tokenBalance = cardTokens,
+        tokenBalances = HashMap(card),
         vaults = vaults.map(::view),
         chainTime = now(),
         payments = payments.sortedByDescending { it.id }.map { p ->
@@ -101,10 +115,10 @@ internal class DemoChain(private val now: () -> Long = { System.currentTimeMilli
                 now() < p.deadline -> 1
                 else -> 2
             }
-            PaymentView(p.id, p.sender, p.recipient, p.amount, p.createdAt, p.deadline, state)
+            PaymentView(p.id, p.sender, p.recipient, p.token, p.amount, p.createdAt, p.deadline, state)
         },
         checkingActivity = checking.sortedByDescending { it.block },
-        escrowAllowance = escrowAllowance,
+        escrowAllowances = HashMap(allowances),
     )
 
     val head: BigInteger get() = block
@@ -122,24 +136,30 @@ internal class DemoChain(private val now: () -> Long = { System.currentTimeMilli
             if (cardWei < value) throw Revert("insufficient funds")
             cardWei -= value
             wei[to.lowercase()] = ethBalance(to) + value
-            if (data.isEmpty()) return
+            if (data.isEmpty()) {
+                if (!to.equals(PHONE, ignoreCase = true)) {
+                    checking += event(ActivityView.Kind.CheckingSent, token = ETH_KEY, amount = value, address = to, by = from)
+                }
+                return
+            }
         }
-        if (to.equals(SepoliaConfig.TOKEN, ignoreCase = true)) {
+        if (SepoliaConfig.token(to) != null) {
+            val token = to
             if (selector == sel(SafeChainCalls.approve(ZERO_ADDRESS, BigInteger.ZERO))) {
-                if (addrArg(0).equals(SepoliaConfig.ESCROW, ignoreCase = true)) escrowAllowance = uintArg(1)
+                if (addrArg(0).equals(SepoliaConfig.ESCROW, ignoreCase = true)) allowances[token.lowercase()] = uintArg(1)
                 return
             }
             require(selector == sel(SafeChainCalls.transfer(ZERO_ADDRESS, BigInteger.ZERO))) { "demo: unsupported token call" }
             val dest = addrArg(0)
             val amount = uintArg(1)
-            if (amount > cardTokens) throw Revert("ERC20: transfer amount exceeds balance")
-            cardTokens -= amount
+            if (amount > card.of(token)) throw Revert("ERC20: transfer amount exceeds balance")
+            card.add(token, -amount)
             val v = vault(dest)
             if (v != null) {
-                v.balance += amount
-                v.activity += event(ActivityView.Kind.Deposited, amount = amount, by = from)
+                v.balances.add(token, amount)
+                v.activity += event(ActivityView.Kind.Deposited, token = token, amount = amount, by = from)
             } else {
-                checking += event(ActivityView.Kind.CheckingSent, amount = amount, address = dest, by = from)
+                checking += event(ActivityView.Kind.CheckingSent, token = token, amount = amount, address = dest, by = from)
             }
             return
         }
@@ -159,12 +179,13 @@ internal class DemoChain(private val now: () -> Long = { System.currentTimeMilli
             sel(SafeChainCalls.requestWithdrawal(ZERO_ADDRESS, BigInteger.ZERO, ZERO_ADDRESS)) -> {
                 if (!isPrimary) throw Revert("NotPrimary")
                 if (v.locked) throw Revert("VaultLocked")
+                val token = addrArg(0)
                 val amount = uintArg(1)
-                if (amount > available(v)) throw Revert("InsufficientAvailable")
+                if (amount > available(v, token)) throw Revert("InsufficientAvailable")
                 val id = BigInteger.valueOf(v.withdrawals.size + 1L)
                 val dest = addrArg(2)
-                v.withdrawals += W(id, dest, amount, now(), now() + v.delay, from, v.epoch)
-                v.activity += event(ActivityView.Kind.WithdrawalRequested, id = id, amount = amount, address = dest, by = from)
+                v.withdrawals += W(id, token, dest, amount, now(), now() + v.delay, from, v.epoch)
+                v.activity += event(ActivityView.Kind.WithdrawalRequested, id = id, token = token, amount = amount, address = dest, by = from)
             }
             sel(SafeChainCalls.cancelWithdrawal(BigInteger.ZERO)) -> {
                 if (!isPrimary && !isRecovery) throw Revert("NotSigner")
@@ -180,8 +201,9 @@ internal class DemoChain(private val now: () -> Long = { System.currentTimeMilli
                 if (now() < w.deadline) throw Revert("DeadlineNotReached")
                 if (isVoid(v, w)) throw Revert("WithdrawalIsVoid")
                 w.status = EXECUTED
-                v.balance -= w.amount
-                vault(w.to)?.let { it.balance += w.amount }
+                v.balances.add(w.token, -w.amount)
+                vault(w.to)?.balances?.add(w.token, w.amount)
+                if (w.to.equals(CARD, ignoreCase = true)) card.add(w.token, w.amount)
                 v.activity += event(ActivityView.Kind.WithdrawalExecuted, id = w.id, by = from)
             }
             sel(SafeChainCalls.lock()) -> {
@@ -237,21 +259,22 @@ internal class DemoChain(private val now: () -> Long = { System.currentTimeMilli
         }
     }
 
-    /** ProtectedTransferEscrow: create (needs the card's approval), cancel before the deadline, settle after. */
+    /** ProtectedTransferEscrow: create (needs the card's approval for that token), cancel before the deadline, settle after. */
     private fun escrow(from: String, selector: String, uintArg: (Int) -> BigInteger, addrArg: (Int) -> String) {
         when (selector) {
             sel(SafeChainCalls.createPayment(ZERO_ADDRESS, ZERO_ADDRESS, BigInteger.ZERO, 0)) -> {
+                val token = addrArg(0)
                 val recipient = addrArg(1)
                 val amount = uintArg(2)
                 val protection = uintArg(3).toLong()
                 if (recipient.equals(from, ignoreCase = true) || recipient == ZERO_ADDRESS) throw Revert("InvalidRecipient")
-                if (protection < 5 * 60 || protection > 30 * DAY) throw Revert("InvalidProtection")
-                if (amount > escrowAllowance) throw Revert("ERC20: insufficient allowance")
-                if (amount > cardTokens) throw Revert("ERC20: transfer amount exceeds balance")
-                cardTokens -= amount
+                if (protection < MIN_HOLD || protection > 30 * DAY) throw Revert("InvalidProtection")
+                if (amount > allowances.of(token)) throw Revert("ERC20: insufficient allowance")
+                if (amount > card.of(token)) throw Revert("ERC20: transfer amount exceeds balance")
+                card.add(token, -amount)
                 val id = BigInteger.valueOf(payments.size + 1L)
-                payments += P(id, from, recipient, amount, now(), now() + protection)
-                checking += event(ActivityView.Kind.PaymentSent, id = id, amount = amount, address = recipient, by = from)
+                payments += P(id, from, recipient, token, amount, now(), now() + protection)
+                checking += event(ActivityView.Kind.PaymentSent, id = id, token = token, amount = amount, address = recipient, by = from)
             }
             sel(SafeChainCalls.cancelPayment(BigInteger.ZERO)) -> {
                 val p = payments.firstOrNull { it.id == uintArg(0) } ?: throw Revert("NotPending")
@@ -259,16 +282,16 @@ internal class DemoChain(private val now: () -> Long = { System.currentTimeMilli
                 if (!from.equals(p.sender, ignoreCase = true) && !from.equals(p.recipient, ignoreCase = true)) throw Revert("NotAuthorized")
                 if (now() >= p.deadline) throw Revert("DeadlinePassed")
                 p.status = CANCELLED
-                if (p.sender.equals(CARD, ignoreCase = true)) cardTokens += p.amount
-                checking += event(ActivityView.Kind.PaymentCancelled, id = p.id, by = from)
+                if (p.sender.equals(CARD, ignoreCase = true)) card.add(p.token, p.amount)
+                checking += event(ActivityView.Kind.PaymentCancelled, id = p.id, token = p.token, by = from)
             }
             sel(SafeChainCalls.settlePayment(BigInteger.ZERO)) -> {
                 val p = payments.firstOrNull { it.id == uintArg(0) } ?: throw Revert("NotPending")
                 if (p.status != PENDING) throw Revert("NotPending")
                 if (now() < p.deadline) throw Revert("DeadlineNotReached")
                 p.status = EXECUTED
-                if (p.recipient.equals(CARD, ignoreCase = true)) cardTokens += p.amount
-                checking += event(ActivityView.Kind.PaymentSettled, id = p.id, by = from)
+                if (p.recipient.equals(CARD, ignoreCase = true)) card.add(p.token, p.amount)
+                checking += event(ActivityView.Kind.PaymentSettled, id = p.id, token = p.token, by = from)
             }
             else -> throw Revert("not available in the demo")
         }
@@ -280,9 +303,11 @@ internal class DemoChain(private val now: () -> Long = { System.currentTimeMilli
 
     private fun isVoid(v: V, w: W) = w.epoch < v.epoch && w.deadline > (v.lockedAt[w.epoch] ?: Long.MAX_VALUE)
 
-    private fun reserved(v: V) = v.withdrawals.filter { it.status == PENDING }.fold(BigInteger.ZERO) { a, w -> a + w.amount }
+    private fun reserved(v: V, token: String) = v.withdrawals
+        .filter { it.status == PENDING && it.token.equals(token, ignoreCase = true) }
+        .fold(BigInteger.ZERO) { a, w -> a + w.amount }
 
-    private fun available(v: V) = (v.balance - reserved(v)).max(BigInteger.ZERO)
+    private fun available(v: V, token: String) = (v.balances.of(token) - reserved(v, token)).max(BigInteger.ZERO)
 
     private fun view(v: V) = VaultView(
         address = v.address,
@@ -291,8 +316,8 @@ internal class DemoChain(private val now: () -> Long = { System.currentTimeMilli
         haven = ZERO_ADDRESS,
         delaySeconds = v.delay,
         locked = v.locked,
-        balance = v.balance,
-        available = available(v),
+        balances = SepoliaConfig.TOKENS.associate { it.key to v.balances.of(it.address) },
+        available = SepoliaConfig.TOKENS.associate { it.key to available(v, it.address) },
         pendingPrimary = ZERO_ADDRESS,
         previousPrimary = ZERO_ADDRESS,
         vetoUntil = 0,
@@ -304,16 +329,18 @@ internal class DemoChain(private val now: () -> Long = { System.currentTimeMilli
                 now() < w.deadline -> 1
                 else -> 2
             }
-            WithdrawalView(w.id, SepoliaConfig.TOKEN, w.to, w.amount, w.requestedAt, w.deadline, w.initiator, toHaven = false, state = state, voided = void)
+            WithdrawalView(w.id, w.token, w.to, w.amount, w.requestedAt, w.deadline, w.initiator, toHaven = false, state = state, voided = void)
         },
         policyNonce = v.policyNonce,
         policy = v.policy,
         activity = v.activity.sortedByDescending { it.block },
     )
 
+    @Suppress("LongParameterList")
     private fun event(
         kind: ActivityView.Kind,
         id: BigInteger? = null,
+        token: String? = null,
         amount: BigInteger? = null,
         address: String? = null,
         by: String? = null,
@@ -321,7 +348,7 @@ internal class DemoChain(private val now: () -> Long = { System.currentTimeMilli
     ): ActivityView {
         // Blocks are ~12 s apart; past events get an older block so "x h ago" reads right.
         val at = block - BigInteger.valueOf(ago / SECONDS_PER_BLOCK)
-        return ActivityView(kind, at, "0x" + "de".repeat(31) + "%02x".format(at.toInt() and 0xff), at.toLong(), id, amount, address, by)
+        return ActivityView(kind, at, "0x" + "de".repeat(31) + "%02x".format(at.toInt() and 0xff), at.toLong(), id, amount, address, by, token = token)
     }
 
     companion object {
@@ -332,8 +359,12 @@ internal class DemoChain(private val now: () -> Long = { System.currentTimeMilli
         private const val KIND_RECOVERY = 1
         private const val HOUR = 3_600L
         private const val DAY = 86_400L
+        private const val MIN_HOLD = 5 * 60L
         private const val SECONDS_PER_BLOCK = 12L
         private const val START_BLOCK = 12_000_000L
+        private const val ETH_KEY = "eth"
+        private const val USDC = SepoliaConfig.USDC
+        private const val PWTEST = SepoliaConfig.TOKEN
 
         // Made-up addresses: they belong to nobody and are never sent to the network.
         val CARD = checksumAddress("0xde00000000000000000000000000000000c0de01")
@@ -345,6 +376,8 @@ internal class DemoChain(private val now: () -> Long = { System.currentTimeMilli
         val FRIEND = checksumAddress("0x7a11000000000000000000000000000000f00d04")
 
         private fun units(n: Long) = BigInteger.valueOf(n).multiply(BigInteger.TEN.pow(SepoliaConfig.TOKEN_DECIMALS))
+        private fun usdc(n: Long) = BigInteger.valueOf(n).multiply(BigInteger.TEN.pow(USDC_DECIMALS))
+        private const val USDC_DECIMALS = 6
         private fun sel(call: ByteArray) = Hex.encode(call.copyOf(SELECTOR))
     }
 }

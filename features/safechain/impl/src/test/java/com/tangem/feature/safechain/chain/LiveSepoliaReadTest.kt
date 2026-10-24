@@ -25,7 +25,8 @@ internal class LiveSepoliaReadTest {
         }
         println("health=${checked.health} block=${checked.block.number} snapshot=${checked.value}")
         assertThat(checked.health).isEqualTo(RpcHealth.Agree)
-        assertThat(checked.value.tokenBalance).isAtLeast(BigInteger.ZERO)
+        assertThat(checked.value.tokenBalances.keys).containsExactlyElementsIn(SepoliaConfig.TOKENS.map { it.key })
+        assertThat(checked.value.tokenBalances.of(SepoliaConfig.TOKEN)).isGreaterThan(BigInteger.ZERO)
         assertThat(checked.value.ethBalance).isGreaterThan(BigInteger.ZERO)
     }
 }

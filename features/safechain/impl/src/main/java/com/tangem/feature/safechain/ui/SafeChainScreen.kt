@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -97,17 +98,31 @@ private const val DISABLED_ALPHA = 0.45f
 internal fun SafeChainScreen(state: SafeChainUM, actions: SafeChainActions, modifier: Modifier = Modifier) {
     Box(modifier.fillMaxSize().background(TangemTheme.colors.background.secondary)) {
         Column(Modifier.fillMaxSize().statusBarsPadding()) {
-            AppBarWithBackButton(onBackClick = actions::onBack, text = if (state.vault != null) "Accounts" else "Protected Savings")
+            val page = state.page.takeIf { state.vault != null }
+            AppBarWithBackButton(
+                onBackClick = actions::onBack,
+                text = when {
+                    page == Source.Checking -> "Checking"
+                    page == Source.Savings -> "Savings"
+                    state.vault != null -> "Accounts"
+                    else -> "Protected Savings"
+                },
+            )
+            if (page != null) BackHandler(onBack = actions::onCloseAccount)
+            // Each page starts at its top, and Accounts keeps its own place.
+            val listState = rememberSaveable(page, saver = LazyListState.Saver) { LazyListState() }
             LazyColumn(
+                state = listState,
                 // Edge to edge: the keyboard doesn't resize the window, so pad for it (setup fields live here).
                 modifier = Modifier.fillMaxSize().navigationBarsPadding().imePadding(),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                if (state.demo) item { DemoBanner() }
+                if (state.demo && page == null) item { DemoBanner() }
                 item { HealthBanner(state.health, state.loadError) }
                 val vault = state.vault
                 when {
                     state.loading && vault == null -> item { Loading() }
+                    vault != null && page != null -> accountPage(state, vault, page, actions)
                     vault != null -> home(state, vault, actions)
                     state.accountAddress != null -> item { OpenSavings(state, actions) }
                 }
@@ -120,21 +135,100 @@ internal fun SafeChainScreen(state: SafeChainUM, actions: SafeChainActions, modi
 }
 
 private fun LazyListScope.home(state: SafeChainUM, v: VaultUM, actions: SafeChainActions) {
-    item { TotalHeader(state, v) }
-    item { AccountsCard(state, v) }
+    item { TotalHeader(state, v, actions) }
     item { QuickActions(v, actions) }
+    item { AccountsCard(state, v, actions) }
     v.alerts.forEach { a -> item(key = a) { Alert(a) } }
-    state.previous.forEach { p -> item(key = "prev${p.address}") { PreviousSavings(p, actions) } }
     v.backupChange?.let { b -> item { BackupChange(b, actions) } }
     if (state.upcoming.isNotEmpty()) {
         item { SectionTitle("Upcoming") }
         item { Upcoming(state.upcoming, actions) }
+        item { UpcomingHint(state.upcoming) }
+    }
+    val held = state.assets.filter { it.inChecking || it.inSavings || it.isEth }
+    if (held.isNotEmpty()) {
+        item { SectionTitle("Assets") }
+        item { AssetsCard(held, account = null, onClick = null) }
     }
     item { SectionTitle("Activity") }
-    item { ActivityList(state.activity) }
-    item { SectionTitle("Protection") }
-    item { Protection(state, v, actions) }
+    item { ActivityList(state.activity.take(HOME_ACTIVITY_ROWS)) }
 }
+
+/** One account: its balance and actions, what it holds, what's on its way, and its own history. */
+private fun LazyListScope.accountPage(state: SafeChainUM, v: VaultUM, page: Source, actions: SafeChainActions) {
+    val savings = page == Source.Savings
+    item { AccountHeader(state, v, page) }
+    item {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            val canSpend = v.isPrimary && !(savings && v.locked)
+            QuickAction("Send", R.drawable.ic_arrow_up_24, enabled = canSpend, onClick = { actions.onOpenSend(page, null) })
+            QuickAction("Receive", R.drawable.ic_arrow_down_24, enabled = true, onClick = actions::onOpenReceive)
+            if (savings) {
+                QuickAction("To Checking", R.drawable.ic_exchange_vertical_24, enabled = canSpend, onClick = actions::onMoveToChecking)
+            } else {
+                QuickAction("To Savings", R.drawable.ic_exchange_vertical_24, enabled = v.isPrimary, onClick = actions::onMoveToSavings)
+            }
+        }
+    }
+    val assets = state.assets.filter { if (savings) it.inSavings else it.inChecking || it.isEth }
+    item { SectionTitle("Assets") }
+    item {
+        if (assets.isEmpty()) {
+            Card {
+                Text(
+                    if (savings) "Nothing here yet. Move tokens from Checking to protect them." else "Nothing here yet. Receive tokens to get started.",
+                    style = TangemTheme.typography.body2,
+                    color = TangemTheme.colors.text.tertiary,
+                )
+            }
+        } else {
+            AssetsCard(assets, account = page, onClick = if (v.isPrimary && !(savings && v.locked)) { key -> actions.onOpenSend(page, key) } else null)
+        }
+    }
+    if (savings) {
+        item {
+            Text(
+                "ETH stays in Checking.",
+                style = TangemTheme.typography.caption2,
+                color = TangemTheme.colors.text.tertiary,
+                modifier = Modifier.padding(horizontal = 24.dp),
+            )
+        }
+    }
+    val upcoming = state.upcoming.filter { it.source == page }
+    if (upcoming.isNotEmpty()) {
+        item { SectionTitle("Upcoming") }
+        item { Upcoming(upcoming, actions, showSource = false) }
+        item { UpcomingHint(upcoming) }
+    }
+    item { SectionTitle("Activity") }
+    item { ActivityList(state.activity.filter { it.source == page }) }
+    if (savings) {
+        item { SectionTitle("Protection") }
+        item { Protection(state, v, actions) }
+    } else {
+        item {
+            Card {
+                Row(
+                    Modifier.fillMaxWidth().clickable { actions.onOpenAccount(Source.Savings) },
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Badge(R.drawable.ic_shield_24, Green, GreenBg)
+                    Text(
+                        "Want a safety net? Send with a hold, or keep money in Savings.",
+                        fontSize = 14.sp,
+                        color = TangemTheme.colors.text.secondary,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Icon(painterResource(R.drawable.ic_chevron_right_24), null, tint = TangemTheme.colors.icon.informative)
+                }
+            }
+        }
+    }
+}
+
+private const val HOME_ACTIVITY_ROWS = 5
 
 // ------------------------------------------------------------------ building blocks
 
@@ -155,9 +249,9 @@ private fun Card(modifier: Modifier = Modifier, padding: Dp = 16.dp, content: @C
 @Composable
 private fun SectionTitle(text: String) = Text(
     text = text,
-    style = TangemTheme.typography.subtitle1,
-    color = TangemTheme.colors.text.primary1,
-    modifier = Modifier.padding(start = 24.dp, top = 12.dp),
+    style = TangemTheme.typography.subtitle2,
+    color = TangemTheme.colors.text.tertiary,
+    modifier = Modifier.padding(start = 20.dp, top = 12.dp),
 )
 
 @Composable
@@ -214,17 +308,24 @@ private fun Amount(text: String, size: Int, color: Color = TangemTheme.colors.te
     }
 }
 
+/** An amount in a list row: "+200 USDC" as a 16sp number and a small grey symbol. */
+@Composable
+private fun ListAmount(text: String, color: Color = TangemTheme.colors.text.primary1) = Row {
+    Text(text.substringBefore(" "), fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = color, maxLines = 1, modifier = Modifier.alignByBaseline())
+    text.substringAfter(" ", "").takeIf { it.isNotEmpty() }?.let {
+        Text(" $it", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = TangemTheme.colors.text.tertiary, maxLines = 1, modifier = Modifier.alignByBaseline())
+    }
+}
+
 @Composable
 private fun Loading() = Box(Modifier.fillMaxWidth().padding(48.dp), contentAlignment = Alignment.Center) {
     CircularProgressIndicator(color = TangemTheme.colors.icon.primary1)
 }
 
 @Composable
-private fun DemoBanner() = Banner(
-    "Demo (debug build): a pretend chain for trying the screens. No card, no network, nothing is real.",
-    Amber,
-    AmberBg,
-)
+private fun DemoBanner() = Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+    Pill("Demo · nothing here is real", Amber, AmberBg)
+}
 
 @Composable
 private fun Banner(text: String, fg: Color, bg: Color) = Text(
@@ -258,58 +359,245 @@ private fun Alert(text: String) = Row(
 
 // ------------------------------------------------------------------ home
 
+/** A balance: the big headline, then (smaller) what has no price. */
 @Composable
-private fun TotalHeader(state: SafeChainUM, v: VaultUM) = Column(
+private fun Balance(b: BalanceUM, size: Int, center: Boolean = false) = Column(
+    horizontalAlignment = if (center) Alignment.CenterHorizontally else Alignment.Start,
+    verticalArrangement = Arrangement.spacedBy(2.dp),
+) {
+    Amount(b.headline, size = size)
+    b.extra?.let { Text(it, style = TangemTheme.typography.body2, color = TangemTheme.colors.text.tertiary) }
+}
+
+@Composable
+private fun TotalHeader(state: SafeChainUM, v: VaultUM, actions: SafeChainActions) = Column(
     Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
-    verticalArrangement = Arrangement.spacedBy(8.dp),
+    horizontalAlignment = Alignment.CenterHorizontally,
+    verticalArrangement = Arrangement.spacedBy(10.dp),
 ) {
     Text("Total balance", style = TangemTheme.typography.body2, color = TangemTheme.colors.text.tertiary)
-    Amount(state.total, size = 40)
-    when {
-        v.locked -> Pill("Savings locked", Red, RedBg, R.drawable.ic_lock_24)
-        v.backupIsThisPhone -> Pill("Protected · backup on this phone", Green, GreenBg, R.drawable.ic_shield_24)
-        else -> Pill("Protected · backup wallet", Green, GreenBg, R.drawable.ic_shield_24)
+    Balance(state.total, size = 40, center = true)
+    Box(Modifier.clip(PillShape).clickable { actions.onOpenAccount(Source.Savings) }) {
+        when {
+            v.locked -> Pill("Savings locked", Red, RedBg, R.drawable.ic_lock_24)
+            v.backupIsThisPhone -> Pill("Protected · backup on this phone", Green, GreenBg, R.drawable.ic_shield_24)
+            else -> Pill("Protected · backup wallet", Green, GreenBg, R.drawable.ic_shield_24)
+        }
     }
 }
 
 @Composable
-private fun AccountsCard(state: SafeChainUM, v: VaultUM) = Card(padding = 0.dp) {
+private fun AccountsCard(state: SafeChainUM, v: VaultUM, actions: SafeChainActions) = Card(padding = 0.dp) {
+    val checkingAssets = state.assets.filter { it.inChecking }
+    val savingsAssets = state.assets.filter { it.inSavings }
     AccountRow(
         icon = R.drawable.ic_tangem_card_24,
         tint = Blue,
         tintBg = BlueBg,
         name = "Checking",
-        detail = "Your Tangem card · instant",
-        amount = state.cardBalance,
+        detail = "Instant · ${count(checkingAssets.size)}",
+        balance = state.checking,
+        tokens = checkingAssets.map { it.symbol },
         note = null,
+        onClick = { actions.onOpenAccount(Source.Checking) },
     )
-    Box(Modifier.padding(start = 72.dp)) { Divider() }
+    Box(Modifier.padding(start = 72.dp, end = 16.dp)) { Divider() }
     AccountRow(
-        icon = R.drawable.ic_shield_24,
+        icon = if (v.locked) R.drawable.ic_lock_24 else R.drawable.ic_shield_24,
         tint = if (v.locked) Red else Green,
         tintBg = if (v.locked) RedBg else GreenBg,
         name = "Savings",
-        detail = if (v.locked) "Locked · nothing can leave" else "Protected · ${short(v.hold)} hold",
-        amount = v.balance,
-        note = if (v.partlyHeld) "${v.available.substringBefore(" ")} available" else null,
+        detail = if (v.locked) "Locked · nothing can leave" else "${short(v.hold)} hold · ${count(savingsAssets.size)}",
+        balance = v.balance,
+        tokens = savingsAssets.map { it.symbol },
+        note = v.available,
+        onClick = { actions.onOpenAccount(Source.Savings) },
     )
+    state.previous.forEach { p ->
+        Box(Modifier.padding(start = 72.dp, end = 16.dp)) { Divider() }
+        PreviousRow(p, actions)
+    }
 }
 
+/** An older Savings that still holds money: one row, with a small Move (its hold applies on the way out). */
 @Composable
-@Suppress("LongParameterList")
-private fun AccountRow(@DrawableRes icon: Int, tint: Color, tintBg: Color, name: String, detail: String, amount: String, note: String?) = Row(
+private fun PreviousRow(p: PreviousVaultUM, actions: SafeChainActions) = Row(
     Modifier.fillMaxWidth().padding(16.dp),
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(14.dp),
 ) {
-    Badge(icon, tint, tintBg, size = 42.dp)
-    Column(Modifier.weight(1f)) {
-        Text(name, style = TangemTheme.typography.subtitle1, color = TangemTheme.colors.text.primary1)
-        Text(detail, style = TangemTheme.typography.caption2, color = TangemTheme.colors.text.tertiary)
+    val moving = p.moving.firstOrNull()
+    Badge(R.drawable.ic_exchange_vertical_24, Blue, BlueBg, size = 42.dp)
+    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Text("Old Savings", style = TangemTheme.typography.subtitle1, color = TangemTheme.colors.text.primary1)
+        Text(
+            when {
+                moving == null -> "Move it into Savings"
+                moving.isFinal -> "Ready to bring over"
+                else -> "Moving · ${moving.countdown?.replaceFirst("Arrives in", "in").orEmpty()}"
+            },
+            style = TangemTheme.typography.caption2,
+            color = TangemTheme.colors.text.tertiary,
+            maxLines = 1,
+        )
     }
-    Column(horizontalAlignment = Alignment.End) {
-        Amount(amount, size = 18)
-        note?.let { Text(it, style = TangemTheme.typography.caption2, color = TangemTheme.colors.text.tertiary) }
+    Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(p.balance, style = TangemTheme.typography.body2, fontWeight = FontWeight.SemiBold, color = TangemTheme.colors.text.primary1, maxLines = 1)
+        when {
+            moving?.canRelease == true -> CompactButton("Bring now", Green, GreenBg) { actions.onReleaseFromPrevious(p.address, moving.id) }
+            p.canMove && moving == null -> CompactButton("Move", TangemTheme.colors.text.primary1, TangemTheme.colors.button.secondary) {
+                actions.onMoveFromPrevious(p.address)
+            }
+        }
+    }
+}
+
+private fun count(n: Int) = if (n == 1) "1 asset" else "$n assets"
+
+@Composable
+@Suppress("LongParameterList")
+private fun AccountRow(
+    @DrawableRes icon: Int,
+    tint: Color,
+    tintBg: Color,
+    name: String,
+    detail: String,
+    balance: BalanceUM,
+    tokens: List<String>,
+    note: String?,
+    onClick: () -> Unit,
+) = Row(
+    Modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(14.dp),
+) {
+    Badge(icon, tint, tintBg, size = 42.dp)
+    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Text(name, style = TangemTheme.typography.subtitle1, color = TangemTheme.colors.text.primary1)
+        Text(detail, style = TangemTheme.typography.caption2, color = if (tint == Red) Red else TangemTheme.colors.text.tertiary)
+    }
+    Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Amount(balance.headline, size = 18)
+        when {
+            note != null -> Text(note, style = TangemTheme.typography.caption2, color = TangemTheme.colors.text.tertiary)
+            tokens.isNotEmpty() -> TokenStack(tokens)
+        }
+    }
+    Icon(painterResource(R.drawable.ic_chevron_right_24), null, tint = TangemTheme.colors.icon.informative, modifier = Modifier.size(20.dp))
+}
+
+/** Up to three small overlapping token icons. */
+@Composable
+private fun TokenStack(symbols: List<String>) = Row(horizontalArrangement = Arrangement.spacedBy((-6).dp)) {
+    symbols.take(3).forEach { s ->
+        Box(Modifier.size(20.dp).clip(CircleShape).background(TangemTheme.colors.background.primary).padding(1.5.dp)) {
+            TokenIcon(s, 17.dp)
+        }
+    }
+}
+
+/** ETH and USDC use Tangem's own icons; any other token gets a letter badge. */
+@Composable
+private fun TokenIcon(symbol: String, size: Dp = 40.dp) {
+    val res = when (symbol) {
+        "ETH" -> R.drawable.img_eth_22
+        "USDC" -> R.drawable.img_usdc_16
+        else -> null
+    }
+    if (res != null) {
+        Image(painterResource(res), symbol, modifier = Modifier.size(size).clip(CircleShape))
+    } else {
+        Box(Modifier.size(size).clip(CircleShape).background(Amber), contentAlignment = Alignment.Center) {
+            Text(symbol.take(1), color = Color.Black, fontWeight = FontWeight.Bold, fontSize = (size.value * 0.45f).sp)
+        }
+    }
+}
+
+/**
+ * Tokens, the way Tangem lists them: icon and name on the left, value and amount on the right. [account] null is
+ * both accounts together (Home), where the second line says what part sits in Savings.
+ */
+@Composable
+private fun AssetsCard(assets: List<AssetUM>, account: Source?, onClick: ((String) -> Unit)?) = Card(padding = 0.dp) {
+    assets.forEachIndexed { i, a ->
+        if (i > 0) Box(Modifier.padding(start = 72.dp, end = 16.dp)) { Divider() }
+        val amount = when (account) {
+            Source.Checking -> a.checking
+            Source.Savings -> a.savings ?: "0"
+            null -> a.total
+        }
+        val fiat = when (account) {
+            Source.Checking -> a.checkingFiat
+            Source.Savings -> a.savingsFiat
+            null -> a.totalFiat
+        }
+        val sub = when {
+            a.isEth -> "Pays network fees"
+            // Unpriced tokens already show the total on the right, so only the Savings part is news here.
+            account == null && a.inSavings && a.inChecking && fiat == null -> "${a.savings} in Savings"
+            account == null && a.inSavings && a.inChecking -> "${a.checking} Checking · ${a.savings} Savings"
+            account == null && a.inSavings -> "All in Savings"
+            account == Source.Savings && a.partlyHeld -> "${a.savingsAvailable} available"
+            fiat != null -> "$1.00"
+            else -> "Test token"
+        }
+        Row(
+            Modifier.fillMaxWidth().then(if (onClick != null) Modifier.clickable { onClick(a.key) } else Modifier).padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            TokenIcon(a.symbol)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(a.name, style = TangemTheme.typography.subtitle1, color = TangemTheme.colors.text.primary1, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(sub, style = TangemTheme.typography.caption2, color = TangemTheme.colors.text.tertiary, maxLines = 1)
+            }
+            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                if (fiat != null) {
+                    Text(fiat, style = TangemTheme.typography.subtitle1, color = TangemTheme.colors.text.primary1, maxLines = 1)
+                    Text("$amount ${a.symbol}", style = TangemTheme.typography.caption2, color = TangemTheme.colors.text.tertiary, maxLines = 1)
+                } else {
+                    ListAmount("$amount ${a.symbol}")
+                }
+            }
+        }
+    }
+}
+
+/** The top of an account page: its badge, balance, and how it behaves. */
+@Composable
+private fun AccountHeader(state: SafeChainUM, v: VaultUM, page: Source) = Column(
+    Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
+    horizontalAlignment = Alignment.CenterHorizontally,
+    verticalArrangement = Arrangement.spacedBy(10.dp),
+) {
+    val savings = page == Source.Savings
+    when {
+        !savings -> Badge(R.drawable.ic_tangem_card_24, Blue, BlueBg, size = 56.dp)
+        v.locked -> Badge(R.drawable.ic_lock_24, Red, RedBg, size = 56.dp)
+        else -> Badge(R.drawable.ic_shield_24, Green, GreenBg, size = 56.dp)
+    }
+    val balance = if (savings) v.balance else state.checking
+    Amount(balance.headline, size = 40)
+    // One quiet line under the number: what has no price, and what can leave now.
+    listOfNotNull(balance.extra, if (savings) v.available?.let { "$it now" } else null)
+        .takeIf { it.isNotEmpty() }
+        ?.let { Text(it.joinToString(" · "), style = TangemTheme.typography.body2, color = TangemTheme.colors.text.tertiary, textAlign = TextAlign.Center) }
+    when {
+        !savings -> Pill("Instant · your Tangem card", Blue, BlueBg, R.drawable.ic_tangem_card_24)
+        v.locked -> Pill("Locked · nothing can leave", Red, RedBg, R.drawable.ic_lock_24)
+        else -> Pill("Every payment waits ${v.hold}", Green, GreenBg, R.drawable.ic_circle_clock_24)
+    }
+    val address = if (savings) v.address else state.accountAddress
+    if (address != null) {
+        val clipboard = LocalClipboardManager.current
+        Row(
+            Modifier.clip(PillShape).clickable { clipboard.setText(AnnotatedString(address)) }.padding(horizontal = 10.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text("${address.take(6)}…${address.takeLast(4)}", style = TangemTheme.typography.caption2, color = TangemTheme.colors.text.tertiary)
+            Icon(painterResource(R.drawable.ic_copy_24), "Copy address", tint = TangemTheme.colors.icon.informative, modifier = Modifier.size(14.dp))
+        }
     }
 }
 
@@ -323,22 +611,22 @@ private fun QuickActions(v: VaultUM, actions: SafeChainActions) = Row(
     QuickAction("Move", R.drawable.ic_exchange_vertical_24, enabled = v.isPrimary, onClick = actions::onOpenMove)
 }
 
+/** A round action, dark like Tangem's main screen; white is kept for the one primary button on a page. */
 @Composable
 private fun QuickAction(label: String, @DrawableRes icon: Int, enabled: Boolean, onClick: () -> Unit) = Column(
     Modifier.clip(CardShape).clickable(enabled = enabled, onClick = onClick).padding(8.dp),
     horizontalAlignment = Alignment.CenterHorizontally,
     verticalArrangement = Arrangement.spacedBy(8.dp),
 ) {
-    val fg = if (enabled) TangemTheme.colors.text.primary2 else TangemTheme.colors.text.disabled
-    val bg = if (enabled) TangemTheme.colors.button.primary else TangemTheme.colors.background.primary
-    Box(Modifier.size(56.dp).clip(CircleShape).background(bg), contentAlignment = Alignment.Center) {
+    val fg = if (enabled) TangemTheme.colors.icon.primary1 else TangemTheme.colors.text.disabled
+    Box(Modifier.size(56.dp).clip(CircleShape).background(TangemTheme.colors.button.secondary), contentAlignment = Alignment.Center) {
         Icon(painterResource(icon), null, tint = fg, modifier = Modifier.size(24.dp))
     }
     Text(label, style = TangemTheme.typography.button, color = if (enabled) TangemTheme.colors.text.primary1 else TangemTheme.colors.text.disabled)
 }
 
 @Composable
-private fun Upcoming(items: List<WithdrawalUM>, actions: SafeChainActions) = Card {
+private fun Upcoming(items: List<WithdrawalUM>, actions: SafeChainActions, showSource: Boolean = true) = Card {
     val uri = LocalUriHandler.current
     items.forEachIndexed { i, w ->
         if (i > 0) Divider()
@@ -357,9 +645,10 @@ private fun Upcoming(items: List<WithdrawalUM>, actions: SafeChainActions) = Car
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    listOf(
-                        w.countdown ?: "Ready to deliver",
+                    listOfNotNull(
+                        w.countdown?.replaceFirst("Arrives in", "In") ?: "Ready to deliver",
                         when {
+                            !showSource -> null
                             w.incoming -> "to Checking"
                             w.source == Source.Checking -> "from Checking"
                             else -> "from Savings"
@@ -367,34 +656,48 @@ private fun Upcoming(items: List<WithdrawalUM>, actions: SafeChainActions) = Car
                     ).joinToString(" · "),
                     style = TangemTheme.typography.caption2,
                     color = if (w.isFinal) Green else TangemTheme.colors.text.tertiary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
-            Text(
-                (if (w.incoming) "+" else "−") + w.amount.substringBefore(" "),
-                style = TangemTheme.typography.subtitle1,
-                color = if (w.incoming) Green else TangemTheme.colors.text.primary1,
-            )
+            ListAmount((if (w.incoming) "+" else "−") + w.amount, if (w.incoming) Green else TangemTheme.colors.text.primary1)
         }
-        if (!w.isFinal) Progress(w.progress, if (w.incoming) Green else Amber, if (w.incoming) GreenBg else AmberBg)
-        if (w.disputed) Text("⚠ Your data sources disagree about this payment", color = Red, style = TangemTheme.typography.caption2)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (w.canCancel) {
-                SmallButton("Cancel", Red, RedBg, R.drawable.ic_close_24) {
+        // Progress and the action share one line, so every row is the same height.
+        Row(Modifier.padding(start = 52.dp).height(30.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f)) {
+                if (!w.isFinal) Progress(w.progress, if (w.incoming) Green else Amber, if (w.incoming) GreenBg else AmberBg)
+            }
+            when {
+                w.canCancel -> CompactButton("Cancel", Red, RedBg) {
                     if (w.source == Source.Checking) actions.onCancelPayment(w.id) else actions.onCancelWithdrawal(w.id)
                 }
-            }
-            if (w.canRelease) {
-                SmallButton("Deliver now", Green, GreenBg, R.drawable.ic_check_24) {
+                w.canRelease -> CompactButton("Deliver", Green, GreenBg) {
                     if (w.source == Source.Checking) actions.onSettlePayment(w.id) else actions.onReleaseWithdrawal(w.id)
                 }
             }
         }
+        if (w.disputed) Text("⚠ Your data sources disagree about this payment", color = Red, style = TangemTheme.typography.caption2)
     }
+}
+
+/** What the Upcoming card means, under it, while anything in it can be cancelled. */
+@Composable
+private fun UpcomingHint(items: List<WithdrawalUM>) {
+    if (items.none { it.canCancel }) return
     Text(
         "Didn't make one of these? Cancel it before it arrives and the money goes straight back to the account it came from.",
         style = TangemTheme.typography.caption2,
         color = TangemTheme.colors.text.tertiary,
+        modifier = Modifier.padding(horizontal = 24.dp),
     )
+}
+
+@Composable
+private fun CompactButton(text: String, fg: Color, bg: Color, onClick: () -> Unit) = Box(
+    Modifier.padding(start = 12.dp).height(28.dp).clip(PillShape).background(bg).clickable(onClick = onClick).padding(horizontal = 12.dp),
+    contentAlignment = Alignment.Center,
+) {
+    Text(text, color = fg, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
 }
 
 @Composable
@@ -404,12 +707,12 @@ private fun Progress(value: Float, color: Color, track: Color) = Box(Modifier.fi
 
 @Composable
 private fun SmallButton(text: String, fg: Color, bg: Color, @DrawableRes icon: Int, onClick: () -> Unit) = Row(
-    Modifier.clip(PillShape).background(bg).clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 8.dp),
+    Modifier.clip(PillShape).background(bg).clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 6.dp),
     verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.spacedBy(6.dp),
+    horizontalArrangement = Arrangement.spacedBy(5.dp),
 ) {
-    Icon(painterResource(icon), null, tint = fg, modifier = Modifier.size(16.dp))
-    Text(text, color = fg, style = TangemTheme.typography.button)
+    Icon(painterResource(icon), null, tint = fg, modifier = Modifier.size(14.dp))
+    Text(text, color = fg, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
 }
 
 @Composable
@@ -429,7 +732,7 @@ private fun ActivityList(items: List<ActivityUM>) = Card {
                 ActivityUM.Tone.Good -> Green to GreenBg
                 ActivityUM.Tone.Warning -> Amber to AmberBg
                 ActivityUM.Tone.Danger -> Red to RedBg
-                ActivityUM.Tone.Neutral -> TangemTheme.colors.icon.informative to TangemTheme.colors.background.secondary
+                ActivityUM.Tone.Neutral -> TangemTheme.colors.icon.informative to TangemTheme.colors.button.secondary
             }
             val icon = when (a.icon) {
                 ActivityUM.Icon.In -> R.drawable.ic_arrow_down_24
@@ -443,20 +746,17 @@ private fun ActivityList(items: List<ActivityUM>) = Card {
             Column(Modifier.weight(1f)) {
                 Text(a.title, style = TangemTheme.typography.body2, color = TangemTheme.colors.text.primary1, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    listOf(a.detail, a.time).filter { it.isNotBlank() }.joinToString(" · "),
+                    a.detail.ifBlank { a.time },
                     style = TangemTheme.typography.caption2,
                     color = TangemTheme.colors.text.tertiary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            a.amount?.let {
-                Text(
-                    it,
-                    style = TangemTheme.typography.body2,
-                    fontWeight = FontWeight.SemiBold,
-                    color = if (it.startsWith("+")) Green else TangemTheme.colors.text.primary1,
-                )
+            // Bank style: the amount, and when it happened under it.
+            Column(horizontalAlignment = Alignment.End) {
+                a.amount?.let { ListAmount(it, if (a.tone == ActivityUM.Tone.Good) Green else TangemTheme.colors.text.primary1) }
+                if (a.detail.isNotBlank()) Text(a.time, style = TangemTheme.typography.caption2, color = TangemTheme.colors.text.tertiary, maxLines = 1)
             }
         }
     }
@@ -610,38 +910,8 @@ private fun BackupChange(b: BackupChangeUM, actions: SafeChainActions) = Card {
 }
 
 @Composable
-private fun PreviousSavings(p: PreviousVaultUM, actions: SafeChainActions) = Card {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Badge(R.drawable.ic_exchange_vertical_24, Blue, BlueBg)
-        Column(Modifier.weight(1f)) {
-            Text("Your previous Savings", style = TangemTheme.typography.subtitle1, color = TangemTheme.colors.text.primary1)
-            Text("${p.address.take(6)}…${p.address.takeLast(4)}", style = TangemTheme.typography.caption2, color = TangemTheme.colors.text.tertiary)
-        }
-        Amount(p.balance, size = 16)
-    }
-    p.moving.forEach { w ->
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Moving ${w.amount} here", style = TangemTheme.typography.body2, color = TangemTheme.colors.text.primary1, modifier = Modifier.weight(1f))
-            Text(w.countdown ?: "Ready", style = TangemTheme.typography.caption2, color = if (w.isFinal) Green else Amber)
-        }
-        if (!w.isFinal) Progress(w.progress, Blue, BlueBg)
-        if (w.canRelease) PrimaryButton(text = "Bring it here now", onClick = { actions.onReleaseFromPrevious(p.address, w.id) }, modifier = Modifier.fillMaxWidth())
-    }
-    if (p.canMove && p.moving.isEmpty()) {
-        Text(
-            "Bring it into your current Savings. It waits out the old hold first.",
-            style = TangemTheme.typography.body2,
-            color = TangemTheme.colors.text.secondary,
-        )
-        PrimaryButton(text = "Move ${p.available} here", onClick = { actions.onMoveFromPrevious(p.address) }, modifier = Modifier.fillMaxWidth())
-    }
-}
-
-@Composable
 private fun Footer(state: SafeChainUM) = Text(
-    text = "${SepoliaConfig.NAME} test network · test tokens only · " +
-        (if (state.health is HealthUM.Agree) "verified by 2 independent data sources · " else "") +
-        "the contracts enforce every rule",
+    text = if (state.demo) "Demo · pretend data, no network" else "${SepoliaConfig.NAME} test network · test tokens, no real value",
     style = TangemTheme.typography.caption2,
     color = TangemTheme.colors.text.tertiary,
     textAlign = TextAlign.Center,
@@ -872,7 +1142,7 @@ private fun FormPage(state: SafeChainUM, actions: SafeChainActions) {
                 "Review",
                 actions::onContinue,
                 sheet.amount.isNotBlank() && sheet.to.isNotBlank() &&
-                    (sheet.from == Source.Savings || sheet.hold != HOLD_CUSTOM || sheet.customHours.isNotBlank()),
+                    (sheet.from == Source.Savings || sheet.asset?.isEth == true || sheet.hold != HOLD_CUSTOM || sheet.customHours.isNotBlank()),
             )
             is SheetUM.Withdraw -> Triple("Review", actions::onContinue, sheet.amount.isNotBlank() && (sheet.toChecking || sheet.to.isNotBlank()))
             else -> Triple("Review", actions::onContinue, (sheet as? SheetUM.AddFunds)?.amount?.isNotBlank() == true)
@@ -896,7 +1166,7 @@ private fun FromTo(@DrawableRes fromIcon: Int, fromTint: Color, fromBg: Color, f
     }
     if (to.isNotEmpty()) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Badge(R.drawable.ic_arrow_down_24, TangemTheme.colors.icon.informative, TangemTheme.colors.background.secondary, size = 36.dp)
+            Badge(R.drawable.ic_arrow_down_24, TangemTheme.colors.icon.informative, TangemTheme.colors.button.secondary, size = 36.dp)
             Column(Modifier.weight(1f)) {
                 Text("To $to", style = TangemTheme.typography.subtitle1, color = TangemTheme.colors.text.primary1)
                 Text(toNote, style = TangemTheme.typography.caption2, color = TangemTheme.colors.text.tertiary)
@@ -905,13 +1175,45 @@ private fun FromTo(@DrawableRes fromIcon: Int, fromTint: Color, fromBg: Color, f
     }
 }
 
+/** A quiet label over a form group, matching the section titles on Accounts. */
 @Composable
-private fun AmountField(amount: String, max: String, onChange: (String) -> Unit, onMax: () -> Unit) = Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+private fun FormLabel(text: String) = Text(text, style = TangemTheme.typography.subtitle2, color = TangemTheme.colors.text.tertiary)
+
+/** The token to move: one chip per token the account holds, with how much of it there is. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun TokenChoice(choices: List<AssetUM>, selected: String, amountOf: (AssetUM) -> String, onPick: (String) -> Unit) {
+    FormLabel("Asset")
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        choices.forEach { a ->
+            val on = a.key == selected
+            Row(
+                Modifier
+                    .clip(PillShape)
+                    .background(TangemTheme.colors.background.primary)
+                    .border(1.5.dp, if (on) TangemTheme.colors.icon.primary1 else Color.Transparent, PillShape)
+                    .clickable { onPick(a.key) }
+                    .padding(start = 6.dp, end = 14.dp, top = 6.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                TokenIcon(a.symbol, 26.dp)
+                Column {
+                    Text(a.symbol, style = TangemTheme.typography.button, color = TangemTheme.colors.text.primary1)
+                    Text(amountOf(a), style = TangemTheme.typography.caption2, color = TangemTheme.colors.text.tertiary, maxLines = 1)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AmountField(amount: String, max: String, symbol: String, onChange: (String) -> Unit, onMax: () -> Unit) = Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
     OutlinedTextField(
         value = amount,
         onValueChange = onChange,
         label = { Text("Amount") },
-        suffix = { Text(SepoliaConfig.TOKEN_SYMBOL) },
+        suffix = { Text(symbol) },
         colors = fieldColors(),
         shape = RoundedCornerShape(14.dp),
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
@@ -921,7 +1223,7 @@ private fun AmountField(amount: String, max: String, onChange: (String) -> Unit,
     )
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
-            "$max ${SepoliaConfig.TOKEN_SYMBOL} available",
+            "$max $symbol available",
             style = TangemTheme.typography.caption2,
             color = TangemTheme.colors.text.tertiary,
             modifier = Modifier.weight(1f),
@@ -952,7 +1254,8 @@ private fun SendForm(sh: SheetUM.Withdraw, state: SafeChainUM, actions: SafeChai
         to = if (sh.toChecking) "Checking" else "",
         toNote = if (sh.toChecking) "Your Tangem card" else "",
     )
-    AmountField(sh.amount, sh.max, actions::onAmountChange, actions::onMax)
+    TokenChoice(sh.assets.filter { it.inSavings }, sh.token, { it.savingsAvailable ?: it.savings ?: "0" }, actions::onTokenChange)
+    AmountField(sh.amount, sh.max, sh.asset?.symbol.orEmpty(), actions::onAmountChange, actions::onMax)
     if (!sh.toChecking) {
         AddressField(
             value = sh.to,
@@ -979,7 +1282,7 @@ private val HOLDS = listOf("1" to "1 hour", "24" to "1 day", "72" to "3 days", "
 @Composable
 private fun SendPage(sh: SheetUM.Send, actions: SafeChainActions) {
     val clipboard = LocalClipboardManager.current
-    Text("From", style = TangemTheme.typography.subtitle1, color = TangemTheme.colors.text.primary1)
+    FormLabel("From")
     Column(
         Modifier.fillMaxWidth().clip(CardShape).background(TangemTheme.colors.background.primary),
     ) {
@@ -988,7 +1291,7 @@ private fun SendPage(sh: SheetUM.Send, actions: SafeChainActions) {
             tint = Blue,
             tintBg = BlueBg,
             name = "Checking",
-            detail = "${sh.checkingMax} ${SepoliaConfig.TOKEN_SYMBOL} available",
+            detail = sh.checkingTotal,
             selected = sh.from == Source.Checking,
             enabled = true,
             onClick = { actions.onSendFrom(Source.Checking) },
@@ -1002,7 +1305,7 @@ private fun SendPage(sh: SheetUM.Send, actions: SafeChainActions) {
             detail = when {
                 sh.savingsHold == null -> "Open Savings first"
                 sh.savingsLocked -> "Locked"
-                else -> "${sh.savingsMax} ${SepoliaConfig.TOKEN_SYMBOL} available · ${sh.savingsHold} hold"
+                else -> "${sh.savingsTotal} · ${sh.savingsHold} hold"
             },
             selected = sh.from == Source.Savings,
             enabled = sh.savingsHold != null && !sh.savingsLocked,
@@ -1010,7 +1313,15 @@ private fun SendPage(sh: SheetUM.Send, actions: SafeChainActions) {
         )
     }
 
-    AmountField(sh.amount, sh.max, actions::onAmountChange, actions::onMax)
+    val asset = sh.asset
+    val eth = asset?.isEth == true
+    TokenChoice(
+        sh.choices,
+        sh.token,
+        { if (sh.from == Source.Checking) it.checking else it.savingsAvailable ?: it.savings ?: "0" },
+        actions::onTokenChange,
+    )
+    AmountField(sh.amount, sh.max, asset?.symbol.orEmpty(), actions::onAmountChange, actions::onMax)
     AddressField(
         value = sh.to,
         label = "To address",
@@ -1019,8 +1330,8 @@ private fun SendPage(sh: SheetUM.Send, actions: SafeChainActions) {
         onScan = actions::onScanDestination,
     )
 
-    if (sh.from == Source.Checking) {
-        Text("Hold", style = TangemTheme.typography.subtitle1, color = TangemTheme.colors.text.primary1)
+    if (sh.from == Source.Checking && !eth) {
+        FormLabel("Hold")
         // Every choice visible at once (wrapping), with Instant last: protection is the default.
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             HOLDS.forEach { (value, label) ->
@@ -1077,12 +1388,14 @@ private fun SendPage(sh: SheetUM.Send, actions: SafeChainActions) {
         sh.hold == HOLD_CUSTOM -> customSeconds?.let(::holdText) ?: "the hold you choose"
         else -> HOLDS.firstOrNull { it.first == sh.hold }?.second ?: ""
     }
+    val what = sh.amount.takeIf { it.isNotBlank() }?.let { "the $it ${asset?.symbol}" } ?: "the money"
     when {
+        eth -> Warning("ETH always sends instantly and can't be undone. For a payment you can cancel, send a token like USDC.")
         sh.from == Source.Checking && sh.hold == "0" ->
             Warning("Arrives immediately and can't be undone. Pick a hold if you might want to cancel.")
         else -> Note(
             R.drawable.ic_circle_clock_24,
-            "Arrives in $holdLabel. Until then you can cancel it, and the money comes straight back to " +
+            "Arrives in $holdLabel. Until then you can cancel it, and $what comes straight back to " +
                 (if (sh.from == Source.Checking) "Checking." else "Savings."),
         )
     }
@@ -1146,8 +1459,9 @@ private fun MoveToSavingsForm(sh: SheetUM.AddFunds, actions: SafeChainActions) {
         to = "Savings",
         toNote = "Protected from the moment it arrives",
     )
-    AmountField(sh.amount, sh.max, actions::onAmountChange, actions::onMax)
-    Note(R.drawable.ic_information_24, "Instant, with one card tap.")
+    TokenChoice(sh.assets.filter { it.inChecking }, sh.token, { it.checking }, actions::onTokenChange)
+    AmountField(sh.amount, sh.max, sh.asset?.symbol.orEmpty(), actions::onAmountChange, actions::onMax)
+    Note(R.drawable.ic_information_24, "Instant, with one card tap. ETH stays in Checking to pay network fees.")
     sh.error?.let { Text(it, color = Red, style = TangemTheme.typography.body2) }
 }
 
@@ -1207,7 +1521,7 @@ private fun Sheet(sheet: SheetUM, actions: SafeChainActions) {
         ) {
             when (sheet) {
                 is SheetUM.Move -> MoveSheet(sheet.savingsLocked, actions)
-                is SheetUM.Receive -> ReceiveSheet(sheet)
+                is SheetUM.Receive -> ReceiveSheet(sheet, actions)
                 is SheetUM.Review -> ReviewSheet(sheet, actions)
                 is SheetUM.Working -> WorkingSheet(sheet)
                 is SheetUM.Result -> ResultSheet(sheet, actions)
@@ -1331,23 +1645,53 @@ private fun ResultSheet(r: SheetUM.Result, actions: SafeChainActions) {
 }
 
 @Composable
-private fun ReceiveSheet(r: SheetUM.Receive) {
+private fun ReceiveSheet(r: SheetUM.Receive, actions: SafeChainActions) {
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
-    SheetTitle("Receive into Savings")
+    val savings = r.into == Source.Savings && r.savings != null
+    SheetTitle("Receive")
+    if (r.savings != null) {
+        // Which account the money lands in: one address each.
+        Row(
+            Modifier.fillMaxWidth().clip(PillShape).background(TangemTheme.colors.background.secondary).padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            listOf(Source.Checking to "Checking", Source.Savings to "Savings").forEach { (s, label) ->
+                val on = r.into == s
+                Text(
+                    label,
+                    color = if (on) TangemTheme.colors.text.primary2 else TangemTheme.colors.text.primary1,
+                    style = TangemTheme.typography.button,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.weight(1f).clip(PillShape)
+                        .background(if (on) TangemTheme.colors.button.primary else Color.Transparent)
+                        .clickable { actions.onReceiveInto(s) }
+                        .padding(vertical = 10.dp),
+                )
+            }
+        }
+    }
     Text(
-        "Anything sent to this address lands in Savings, protected. ${SepoliaConfig.NAME} test tokens (${SepoliaConfig.TOKEN_SYMBOL}) only.",
+        if (savings) {
+            "Tokens sent here land in Savings, protected from the moment they arrive."
+        } else {
+            "Your card's address. ETH, USDC, PWTEST or any ${SepoliaConfig.NAME} token lands in Checking."
+        },
         style = TangemTheme.typography.body2,
         color = TangemTheme.colors.text.secondary,
     )
-    Qr(r.address, "Savings address QR code")
+    Row(horizontalArrangement = Arrangement.spacedBy((-6).dp)) {
+        (if (savings) listOf("USDC", "PWTEST") else listOf("ETH", "USDC", "PWTEST")).forEach { TokenIcon(it, 28.dp) }
+    }
+    if (savings) Warning("Tokens only. Don't send ETH to Savings: it can't hold ETH. Send ETH to Checking.")
+    Qr(r.address, if (savings) "Savings address QR code" else "Checking address QR code")
     SelectionContainer { Mono(groupedAddress(r.address), TangemTheme.colors.text.primary1) }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         SecondaryButton(
             text = "Share",
             onClick = {
                 val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, r.address)
-                context.startActivity(Intent.createChooser(send, "Share your Savings address"))
+                context.startActivity(Intent.createChooser(send, "Share your address"))
             },
             modifier = Modifier.weight(1f),
         )

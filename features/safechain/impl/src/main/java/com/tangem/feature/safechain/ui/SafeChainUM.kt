@@ -15,9 +15,13 @@ internal data class SafeChainUM(
     val demo: Boolean = false,
     val health: HealthUM = HealthUM.Unknown,
     /** Checking + Savings. */
-    val total: String = "—",
-    /** Checking: tokens on the card itself, spendable at once (not protected). */
-    val cardBalance: String = "—",
+    val total: BalanceUM = BalanceUM("—"),
+    /** Checking: the card's own tokens, spendable at once (not protected). */
+    val checking: BalanceUM = BalanceUM("—"),
+    /** Every token, across both accounts, in display order. */
+    val assets: List<AssetUM> = emptyList(),
+    /** The account page on top of Accounts, or null for Accounts itself. */
+    val page: Source? = null,
     val gasBalance: String = "—",
     /** This phone's backup key for the card, if it holds one, and the ETH it has for emergency fees. */
     val phoneKey: String? = null,
@@ -42,11 +46,47 @@ internal sealed interface HealthUM {
     data class Disagree(val text: String) : HealthUM
 }
 
+/**
+ * A balance as a bank shows it: dollars for what has a price ("$450.00"), then what has none on one line
+ * ("+ 18,000 PWTEST"). When nothing has a price, the headline is the token amount itself.
+ */
+@Immutable
+internal data class BalanceUM(val headline: String, val extra: String? = null)
+
+/** One token across both accounts. Amounts are formatted numbers without the symbol ("17,700"). */
+@Immutable
+internal data class AssetUM(
+    /** The token's lowercase address, or [ETH] for native Sepolia ETH. */
+    val key: String,
+    val symbol: String,
+    val name: String,
+    val total: String,
+    /** "$450.00", or null when the token has no price. */
+    val totalFiat: String?,
+    val checking: String,
+    val checkingFiat: String?,
+    /** Null when Savings can't hold it (ETH). */
+    val savings: String?,
+    val savingsFiat: String?,
+    /** What Savings can send now; differs from [savings] while payments are on their way out. */
+    val savingsAvailable: String?,
+    val inChecking: Boolean,
+    val inSavings: Boolean,
+) {
+    val isEth: Boolean get() = key == ETH
+    val partlyHeld: Boolean get() = savingsAvailable != null && savingsAvailable != savings
+
+    companion object {
+        const val ETH = "eth"
+    }
+}
+
 @Immutable
 internal data class VaultUM(
     val address: String,
-    val balance: String,
-    val available: String,
+    val balance: BalanceUM,
+    /** What can leave now, in the same form as [balance] ("$200.00 available"), when part is held. */
+    val available: String?,
     /** True when some of the balance is held by payments on their way out. */
     val partlyHeld: Boolean,
     /** e.g. "24 hours". */
@@ -117,11 +157,13 @@ internal data class ActivityUM(
     val title: String,
     val detail: String,
     val time: String,
-    /** Signed amount ("+300", "−100"), or null when nothing moved. */
+    /** Signed amount with its token ("+300 USDC", "−100 PWTEST"), or null when nothing moved. */
     val amount: String?,
     val url: String,
     val icon: Icon,
     val tone: Tone,
+    /** The account it happened in, for the account pages. */
+    val source: Source,
 ) {
     enum class Tone { Neutral, Good, Warning, Danger }
     enum class Icon { In, Out, Returned, Delivered, Lock, Unlock, Key }
@@ -151,19 +193,31 @@ internal sealed interface SheetUM {
     /** Choose a direction: Checking → Savings or Savings → Checking (not while Savings is locked). */
     data class Move(val savingsLocked: Boolean) : SheetUM
 
-    /** Checking → Savings (one card tap, instant). */
-    data class AddFunds(val amount: String = "", val max: String, val error: String? = null) : SheetUM
+    /** Checking → Savings (one card tap, instant). [token] is the chosen [AssetUM.key]. */
+    data class AddFunds(
+        val token: String,
+        val assets: List<AssetUM>,
+        val amount: String = "",
+        val error: String? = null,
+    ) : SheetUM {
+        val asset: AssetUM? get() = assets.firstOrNull { it.key == token }
+        val max: String get() = asset?.checking ?: "0"
+    }
 
     /**
-     * Send from either account. Checking: instant, or with a hold you choose (1 hour to 30 days) through the
-     * protected-payment escrow, cancellable until it ends. Savings: always its own hold.
+     * Send from either account. Checking: instant, or with a hold you choose (5 minutes to 30 days) through the
+     * protected-payment escrow, cancellable until it ends (ETH: instant only). Savings: always its own hold.
      */
     data class Send(
         val from: Source,
+        /** The chosen [AssetUM.key]. */
+        val token: String,
+        val assets: List<AssetUM>,
         val amount: String = "",
         val to: String = "",
-        val checkingMax: String,
-        val savingsMax: String,
+        /** Each account's total, for the From choice ("$250.00"). */
+        val checkingTotal: String,
+        val savingsTotal: String,
         /** The Savings hold, e.g. "24 hours"; null when there is no Savings yet. */
         val savingsHold: String?,
         val savingsLocked: Boolean = false,
@@ -174,19 +228,32 @@ internal sealed interface SheetUM {
         val customUnit: HoldUnit = HoldUnit.Minutes,
         val error: String? = null,
     ) : SheetUM {
-        val max: String get() = if (from == Source.Checking) checkingMax else savingsMax
+        val asset: AssetUM? get() = assets.firstOrNull { it.key == token }
+
+        /** The tokens the chosen account holds (Savings never holds ETH). */
+        val choices: List<AssetUM>
+            get() = assets.filter { if (from == Source.Checking) it.inChecking || it.isEth else it.inSavings }
+
+        val max: String get() = asset?.let { if (from == Source.Checking) it.checking else it.savingsAvailable ?: it.savings } ?: "0"
     }
 
     /** Savings → your own Checking; waits out the hold. */
     data class Withdraw(
+        val token: String,
+        val assets: List<AssetUM>,
         val amount: String = "",
         val to: String = "",
-        val max: String,
         val toChecking: Boolean = false,
         val error: String? = null,
-    ) : SheetUM
+    ) : SheetUM {
+        val asset: AssetUM? get() = assets.firstOrNull { it.key == token }
+        val max: String get() = asset?.let { it.savingsAvailable ?: it.savings } ?: "0"
+    }
 
-    data class Receive(val address: String) : SheetUM
+    /** One address per account; every token arrives at it. Savings counts a plain transfer in. */
+    data class Receive(val checking: String, val savings: String?, val into: Source) : SheetUM {
+        val address: String get() = if (into == Source.Savings && savings != null) savings else checking
+    }
 
     /** Switching the backup from this phone to another wallet: its address, its consent, then two approvals. */
     data class OtherWallet(
@@ -229,8 +296,14 @@ internal interface SafeChainActions {
     fun onScanSignature()
 
     // everyday
+    fun onOpenAccount(source: Source)
+    fun onCloseAccount()
+    /** Send, optionally starting from an account and a token (an account page's asset row). */
     fun onOpenWithdraw()
+    fun onOpenSend(from: Source, token: String?)
     fun onSendFrom(source: Source)
+    fun onTokenChange(key: String)
+    fun onReceiveInto(source: Source)
     fun onHoldChange(hours: String)
     fun onCustomHoursChange(value: String)
     fun onCustomUnitChange(unit: HoldUnit)

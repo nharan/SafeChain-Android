@@ -13,6 +13,8 @@ internal data class ActivityView(
     val address: String? = null,
     val by: String? = null,
     val time: Long? = null,
+    /** The token that moved, when something did. */
+    val token: String? = null,
 ) {
     enum class Kind {
         Deposited, WithdrawalRequested, HavenWithdrawalRequested, WithdrawalCancelled, WithdrawalExecuted,
@@ -56,9 +58,9 @@ internal data class ActivityView(
             fun id() = topic(1)?.let { Hex.toBigInteger(it) }
             fun addr(i: Int) = topic(i)?.let { VaultReader.addressFromTopic(it) }
             return when (kind) {
-                Kind.Deposited -> base.copy(by = addr(2), amount = words.firstOrNull()?.let(Abi::uint))
+                Kind.Deposited -> base.copy(token = addr(1), by = addr(2), amount = words.firstOrNull()?.let(Abi::uint))
                 Kind.WithdrawalRequested -> base.copy(
-                    withdrawalId = id(), address = addr(3), amount = words.getOrNull(0)?.let(Abi::uint),
+                    withdrawalId = id(), token = addr(2), address = addr(3), amount = words.getOrNull(0)?.let(Abi::uint),
                     by = words.getOrNull(1)?.let(Abi::address),
                 )
                 Kind.HavenWithdrawalRequested -> base.copy(withdrawalId = id(), address = addr(2), by = addr(3))

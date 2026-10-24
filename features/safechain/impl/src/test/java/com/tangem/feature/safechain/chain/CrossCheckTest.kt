@@ -34,11 +34,11 @@ internal class CrossCheckTest {
 
     private fun account(vararg ws: WithdrawalView, locked: Boolean = false, pendingPrimary: String = ZERO_ADDRESS) =
         AccountSnapshot(
-            address = "me", ethBalance = BigInteger.TEN, tokenBalance = BigInteger.TEN, chainTime = 1_000,
+            address = "me", ethBalance = BigInteger.TEN, tokenBalances = mapOf("t" to BigInteger.TEN), chainTime = 1_000,
             vaults = listOf(
                 VaultView(
                     address = "0xvault", primary = "me", recovery = "r", haven = ZERO_ADDRESS, delaySeconds = 86_400,
-                    locked = locked, balance = BigInteger.TEN, available = BigInteger.TEN, pendingPrimary = pendingPrimary,
+                    locked = locked, balances = mapOf("t" to BigInteger.TEN), available = mapOf("t" to BigInteger.TEN), pendingPrimary = pendingPrimary,
                     previousPrimary = ZERO_ADDRESS, vetoUntil = 0, withdrawals = ws.toList(),
                 ),
             ),
@@ -105,5 +105,13 @@ internal class CrossCheckTest {
         assertThat(wd.toHaven).isFalse() // a disputed haven move is an ordinary withdrawal
         assertThat(v.locked).isFalse() // keep the Lock action available
         assertThat(v.pendingPrimary).isEqualTo("0xthief") // a scheduled takeover is shown
+    }
+
+    @Test
+    fun `GIVEN balances that differ per token WHEN merged THEN each token shows the lower reading`() {
+        val a = mapOf("usdc" to BigInteger.valueOf(5), "pw" to BigInteger.valueOf(9))
+        val b = mapOf("usdc" to BigInteger.valueOf(7))
+        val merged = listOf(a, b).minPerToken()
+        assertThat(merged).containsExactly("usdc", BigInteger.valueOf(5), "pw", BigInteger.ZERO)
     }
 }
