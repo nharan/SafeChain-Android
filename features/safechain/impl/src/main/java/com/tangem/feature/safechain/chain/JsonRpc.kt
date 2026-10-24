@@ -30,7 +30,7 @@ internal interface EthRpc {
     suspend fun balance(address: String, block: BigInteger): BigInteger
     suspend fun logs(addresses: List<String>, topics: List<String?>, from: BigInteger, to: BigInteger): List<LogEntry>
     suspend fun nonce(address: String): BigInteger
-    suspend fun estimateGas(from: String, to: String, data: ByteArray): BigInteger
+    suspend fun estimateGas(from: String, to: String, data: ByteArray, value: BigInteger = BigInteger.ZERO): BigInteger
     suspend fun maxPriorityFee(): BigInteger
     suspend fun sendRaw(raw: ByteArray): String
     suspend fun receipt(txHash: String): Receipt?
@@ -120,8 +120,15 @@ internal class OkHttpEthRpc(override val url: String, private val http: OkHttpCl
     override suspend fun nonce(address: String) =
         rpc("eth_getTransactionCount", buildJsonArray { add(JsonPrimitive(address)); add(JsonPrimitive("pending")) }).big()
 
-    override suspend fun estimateGas(from: String, to: String, data: ByteArray): BigInteger {
-        val tx = buildJsonObject { put("from", from); put("to", to); put("data", Hex.encode(data)) }
+    override suspend fun estimateGas(from: String, to: String, data: ByteArray, value: BigInteger): BigInteger {
+        // The value matters: sending ETH to an address that has never been used costs far more gas
+        // (about 207k on Sepolia) than a call without value (15k).
+        val tx = buildJsonObject {
+            put("from", from)
+            put("to", to)
+            put("data", Hex.encode(data))
+            if (value.signum() > 0) put("value", Hex.fromBigInteger(value))
+        }
         return rpc("eth_estimateGas", buildJsonArray { add(tx) }).big()
     }
 

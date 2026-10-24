@@ -47,6 +47,7 @@ dependencies {
     implementation(deps.compose.ui.tooling)
     implementation(deps.androidx.appCompat)
     implementation(deps.androidx.biometric)
+    implementation(deps.androidx.activity.compose)
     implementation(deps.decompose)
     implementation(deps.kotlin.coroutines)
     implementation(deps.lifecycle.compose)

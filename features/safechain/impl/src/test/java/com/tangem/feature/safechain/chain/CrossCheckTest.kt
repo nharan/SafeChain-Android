@@ -21,7 +21,7 @@ internal class CrossCheckTest {
         override suspend fun balance(address: String, block: BigInteger): BigInteger = BigInteger.ZERO
         override suspend fun logs(addresses: List<String>, topics: List<String?>, from: BigInteger, to: BigInteger) = emptyList<LogEntry>()
         override suspend fun nonce(address: String): BigInteger = BigInteger.ZERO
-        override suspend fun estimateGas(from: String, to: String, data: ByteArray): BigInteger = BigInteger.ONE
+        override suspend fun estimateGas(from: String, to: String, data: ByteArray, value: BigInteger): BigInteger = BigInteger.ONE
         override suspend fun maxPriorityFee(): BigInteger = BigInteger.ONE
         override suspend fun sendRaw(raw: ByteArray) = "0x"
         override suspend fun receipt(txHash: String): Receipt? = null

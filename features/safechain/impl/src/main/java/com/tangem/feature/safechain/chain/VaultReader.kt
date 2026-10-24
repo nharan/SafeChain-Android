@@ -199,11 +199,33 @@ internal class VaultReader(private val token: String = SepoliaConfig.TOKEN, priv
                     PolicyView(kind, Abi.address(p[1]), Abi.bool(p[2]), Abi.uint(p[3]).toLong(), Abi.address(p[4]))
                 }
             },
-            activity = logs(rpc, listOf(vault), emptyList(), n)
-                .mapNotNull(ActivityView::decode)
+            activity = activity(rpc, vault, n)
                 .sortedWith(compareByDescending<ActivityView> { it.block }.thenByDescending { it.logIndex })
                 .take(MAX_ACTIVITY),
         )
+    }
+
+    /**
+     * The vault's own events, plus token transfers into it: a plain transfer counts as a deposit but emits no
+     * Deposited event (the app's one-tap Add is such a transfer). A transfer whose transaction already has a
+     * Deposited event (the deposit() path) isn't listed twice.
+     */
+    private suspend fun activity(rpc: EthRpc, vault: String, n: BigInteger): List<ActivityView> {
+        val own = logs(rpc, listOf(vault), emptyList(), n).mapNotNull(ActivityView::decode)
+        val deposits = own.filter { it.kind == ActivityView.Kind.Deposited }.map { it.txHash.lowercase() }.toSet()
+        val transfersIn = logs(rpc, listOf(token), listOf(ERC20_TRANSFER, null, topicOf(vault)), n)
+            .filter { it.txHash.lowercase() !in deposits }
+            .map { log ->
+                ActivityView(
+                    kind = ActivityView.Kind.Deposited,
+                    block = log.blockNumber,
+                    txHash = log.txHash,
+                    logIndex = log.logIndex,
+                    amount = Abi.words(Hex.decode(log.data)).firstOrNull()?.let(Abi::uint),
+                    by = log.topics.getOrNull(1)?.let(::addressFromTopic),
+                )
+            }
+        return own + transfersIn
     }
 
     companion object {
@@ -217,6 +239,7 @@ internal class VaultReader(private val token: String = SepoliaConfig.TOKEN, priv
         val VAULT_CREATED = eventTopic("VaultCreated(address,address,address,uint64,bytes32)")
         val PRIMARY_REPLACED = eventTopic("PrimaryReplaced(address,address)")
         val RECOVERY_REPLACED = eventTopic("RecoveryReplaced(address,address)")
+        val ERC20_TRANSFER = eventTopic("Transfer(address,address,uint256)")
 
         fun eventTopic(signature: String) = Hex.encode(signature.toByteArray(Charsets.US_ASCII).keccak())
         fun topicOf(address: String) = "0x" + "0".repeat(24) + address.removePrefix("0x").lowercase()

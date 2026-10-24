@@ -1,12 +1,16 @@
 package com.tangem.feature.safechain.model
 
+import android.content.Context
+import android.content.pm.ApplicationInfo
 import arrow.core.getOrElse
+import com.tangem.blockchain.common.Wallet
 import com.tangem.common.routing.AppRoute
 import com.tangem.core.decompose.di.ModelScoped
 import com.tangem.core.decompose.model.Model
 import com.tangem.core.decompose.model.ParamsContainer
 import com.tangem.core.decompose.navigation.Router
 import com.tangem.feature.safechain.chain.AccountSnapshot
+import com.tangem.feature.safechain.chain.Eip1559Tx
 import com.tangem.feature.safechain.chain.ActivityView
 import com.tangem.feature.safechain.chain.CrossCheckedReader
 import com.tangem.feature.safechain.chain.Eip712
@@ -43,6 +47,7 @@ import com.tangem.features.safechain.SafeChainComponent
 import com.tangem.domain.qrscanning.models.SourceType
 import com.tangem.domain.qrscanning.usecases.ListenToQrScanningUseCase
 import com.tangem.utils.coroutines.CoroutineDispatcherProvider
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -80,6 +85,7 @@ internal class SafeChainModel @Inject constructor(
     private val signer: CardEthSigner,
     private val phoneKeys: PhoneKeyStore,
     private val listenToQrScanning: ListenToQrScanningUseCase,
+    @ApplicationContext private val context: Context,
 ) : Model(), SafeChainActions {
 
     /** Which field the next QR scan fills. */
@@ -113,6 +119,12 @@ internal class SafeChainModel @Inject constructor(
     private var salt: ByteArray? = null
     private var busy = false
 
+    /**
+     * Debug builds only, and only for a wallet that isn't a Tangem card (an emulator has no NFC): a pretend
+     * Sepolia ([DemoChain]) so every screen can be tried. A release or external build never enters it.
+     */
+    private var demo: DemoChain? = null
+
     /** The prepared transactions behind the Review sheet, and what comes after they're mined. */
     private var pending: Pending? = null
 
@@ -124,10 +136,11 @@ internal class SafeChainModel @Inject constructor(
     init {
         modelScope.launch {
             account = runCatching { signer.account(params.userWalletId) }
+                .recoverCatching { e -> if (e is SafeChainSignerError.NotACard && isDebuggable()) startDemo() else throw e }
                 .onFailure { e -> state.update { it.copy(loading = false, loadError = e.message) } }
                 .getOrNull() ?: return@launch
-            phoneKey = phoneKeys.address(account!!.address)
-            state.update { it.copy(accountAddress = account!!.address, phoneKey = phoneKey) }
+            phoneKey = if (demo != null) DemoChain.PHONE else phoneKeys.address(account!!.address)
+            state.update { it.copy(accountAddress = account!!.address, phoneKey = phoneKey, demo = demo != null) }
             refresh()
         }
         listenToQrScanning(SourceType.SAFECHAIN).getOrElse { emptyFlow() }
@@ -142,10 +155,28 @@ internal class SafeChainModel @Inject constructor(
         }
     }
 
+    private fun isDebuggable() = context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+
+    private fun startDemo(): EthAccount {
+        demo = DemoChain()
+        // A placeholder key: in the demo nothing is ever signed.
+        return EthAccount(DemoChain.CARD, Wallet.PublicKey(seedKey = ByteArray(DEMO_KEY_BYTES), derivationType = null))
+    }
+
     // ----------------------------------------------------------------- reading
 
     private suspend fun refresh() {
         val acct = account ?: return
+        demo?.let { d ->
+            snapshot = d.snapshot(acct.address)
+            snapshotBlock = d.head
+            health = RpcHealth.Agree
+            snapshotReadAtMs = System.currentTimeMillis()
+            phoneKeyWei = d.ethBalance(DemoChain.PHONE)
+            state.update { it.copy(loading = false, loadError = null) }
+            render()
+            return
+        }
         try {
             val checked = reader.read(AccountSnapshot::mergeUrgent) { rpc, block -> vaultReader.snapshot(rpc, block, acct.address) }
             snapshot = checked.value
@@ -182,10 +213,12 @@ internal class SafeChainModel @Inject constructor(
         val cur = current(s)
         state.update { ui ->
             ui.copy(
-                cardBalance = "${fmt(s.tokenBalance)} ${SepoliaConfig.TOKEN_SYMBOL}",
+                total = money(s.tokenBalance + (cur?.balance ?: BigInteger.ZERO)),
+                cardBalance = money(s.tokenBalance),
                 gasBalance = "${fmt(s.ethBalance)} Sepolia ETH",
                 phoneKey = phoneKey,
                 phoneKeyGas = "${fmt(phoneKeyWei)} Sepolia ETH",
+                phoneKeyLow = phoneKey != null && phoneKeyWei < PHONE_GAS_LOW,
                 health = when (val h = health) {
                     RpcHealth.Agree, null -> HealthUM.Agree
                     is RpcHealth.Degraded -> HealthUM.Degraded(h.problems.joinToString(" · "))
@@ -198,14 +231,24 @@ internal class SafeChainModel @Inject constructor(
                     .map { v ->
                         PreviousVaultUM(
                             address = v.address,
-                            balance = "${fmt(v.balance)} ${SepoliaConfig.TOKEN_SYMBOL}",
-                            available = "${fmt(v.available)} ${SepoliaConfig.TOKEN_SYMBOL}",
+                            balance = money(v.balance),
+                            available = money(v.available),
                             canMove = cur != null && !v.locked && v.available.signum() > 0,
-                            moving = v.withdrawals.filter { it.state in 1..2 }.map { it.toUM(me, now) },
+                            moving = v.withdrawals.filter { it.state in 1..2 }.map { it.toUM(me, now, v.delaySeconds, s) },
                         )
                     },
             )
         }
+    }
+
+    /** Who an address is, in words, when it's one of the user's own. */
+    private fun label(address: String?, me: String, s: AccountSnapshot): String = when {
+        address == null -> ""
+        address.equals(me, ignoreCase = true) -> "Your Checking"
+        address.equals(phoneKey, ignoreCase = true) -> "This phone"
+        address.equals(current(s)?.address, ignoreCase = true) -> "Your Savings"
+        s.vaults.any { it.address.equals(address, ignoreCase = true) } -> "Your previous Savings"
+        else -> short(address)
     }
 
     private fun VaultView.toUM(me: String, now: Long, s: AccountSnapshot): VaultUM {
@@ -216,23 +259,26 @@ internal class SafeChainModel @Inject constructor(
             if (vetoUntil > now) {
                 add("Your spending key was replaced. Until ${time(vetoUntil)} you can still lock, cancel, or move everything to your safe haven.")
             }
-            withdrawals.filter { it.state == 1 && !it.toHaven }.forEach {
-                add("${fmt(it.amount)} ${SepoliaConfig.TOKEN_SYMBOL} is on its way to ${short(it.to)}. If you didn't send it, cancel it before ${time(it.deadline)}: the money comes back.")
-            }
         }
         val backupIsThisPhone = phoneKey?.equals(recovery, ignoreCase = true) == true
+        val hours = delaySeconds / HOUR
         return VaultUM(
             address = address,
-            balance = "${fmt(balance)} ${SepoliaConfig.TOKEN_SYMBOL}",
-            available = "${fmt(available)} ${SepoliaConfig.TOKEN_SYMBOL}",
-            delay = "${delaySeconds / HOUR}h",
+            balance = money(balance),
+            available = money(available),
+            partlyHeld = available < balance,
+            hold = when {
+                hours == HOURS_PER_DAY -> "24 hours"
+                hours % HOURS_PER_DAY == 0L -> "${hours / HOURS_PER_DAY} days"
+                else -> "$hours hours"
+            },
             locked = locked,
             isPrimary = primary.equals(me, ignoreCase = true),
             recovery = recovery,
             backupIsThisPhone = backupIsThisPhone,
             haven = haven.takeIf { it != ZERO_ADDRESS },
             alerts = alerts,
-            pending = withdrawals.filter { it.state in 1..2 }.map { it.toUM(me, now) },
+            pending = withdrawals.filter { it.state in 1..2 }.map { it.toUM(me, now, delaySeconds, s) },
             activity = activity.map { it.toUM(me, s) },
             backupChange = policy?.takeIf { it.kind == POLICY_NEW_RECOVERY }?.let { p ->
                 BackupChangeUM(
@@ -247,48 +293,59 @@ internal class SafeChainModel @Inject constructor(
         )
     }
 
-    private fun WithdrawalView.toUM(me: String, now: Long) = WithdrawalUM(
-        id = id.toString(),
-        amount = "${fmt(amount)} ${SepoliaConfig.TOKEN_SYMBOL}",
-        to = to,
-        toHaven = toHaven,
-        isFinal = state == 2,
-        countdown = if (state == 1 && deadline > now) duration(deadline - now) else null,
-        deadline = time(deadline),
-        // The contract decides; these only choose which buttons to offer.
-        canCancel = state == 1 && (!toHaven || initiator.equals(me, ignoreCase = true)),
-        canRelease = state == 2,
-        disputed = disputed,
-    )
+    private fun WithdrawalView.toUM(me: String, now: Long, holdSeconds: Long, s: AccountSnapshot): WithdrawalUM {
+        val span = (deadline - requestedAt).coerceAtLeast(holdSeconds).coerceAtLeast(1)
+        return WithdrawalUM(
+            id = id.toString(),
+            amount = money(amount),
+            to = to,
+            toLabel = if (toHaven) "Your safe haven" else label(to, me, s),
+            toHaven = toHaven,
+            isFinal = state == 2,
+            countdown = if (state == 1 && deadline > now) "Arrives in ${duration(deadline - now)}" else null,
+            progress = ((now - requestedAt).toFloat() / span).coerceIn(0f, 1f),
+            deadline = time(deadline),
+            // The contract decides; these only choose which buttons to offer.
+            canCancel = state == 1 && (!toHaven || initiator.equals(me, ignoreCase = true)),
+            canRelease = state == 2,
+            disputed = disputed,
+        )
+    }
 
     private fun ActivityView.toUM(me: String, s: AccountSnapshot): ActivityUM {
-        val amt = amount?.let { "${fmt(it)} ${SepoliaConfig.TOKEN_SYMBOL}" }.orEmpty()
+        val plus = amount?.let { "+${fmt(it)}" }
+        val minus = amount?.let { "−${fmt(it)}" }
         val who = when {
             by == null -> ""
-            by.equals(me, ignoreCase = true) -> "by this card"
+            by.equals(me, ignoreCase = true) -> "by your card"
             by.equals(phoneKey, ignoreCase = true) -> "by this phone"
             else -> "by ${short(by)}"
         }
-        val (title, detail, tone) = when (kind) {
-            ActivityView.Kind.Deposited -> Triple("Received $amt", who.replace("by ", "from "), ActivityUM.Tone.Good)
-            ActivityView.Kind.WithdrawalRequested -> Triple("Sending $amt", "to ${short(address)} $who", ActivityUM.Tone.Warning)
-            ActivityView.Kind.HavenWithdrawalRequested -> Triple("Moving to safe haven", "to ${short(address)} $who", ActivityUM.Tone.Warning)
-            ActivityView.Kind.WithdrawalCancelled -> Triple("Payment #$withdrawalId cancelled", "money back in your balance $who", ActivityUM.Tone.Good)
-            ActivityView.Kind.WithdrawalExecuted -> Triple("Payment #$withdrawalId delivered", who, ActivityUM.Tone.Neutral)
-            ActivityView.Kind.VoidedReleased -> Triple("Payment #$withdrawalId stopped by a lock", "money back in your balance", ActivityUM.Tone.Good)
-            ActivityView.Kind.Locked -> Triple("Savings locked", who, ActivityUM.Tone.Danger)
-            ActivityView.Kind.Unlocked -> Triple("Savings unlocked", who, ActivityUM.Tone.Neutral)
-            ActivityView.Kind.ReplacementScheduled -> Triple("Spending-key replacement scheduled", "to ${short(address)}", ActivityUM.Tone.Danger)
-            ActivityView.Kind.ReplacementCancelled -> Triple("Spending-key replacement cancelled", "", ActivityUM.Tone.Good)
-            ActivityView.Kind.PrimaryReplaced -> Triple("Spending key replaced", "now ${short(address)}", ActivityUM.Tone.Danger)
-            ActivityView.Kind.RecoveryReplaced -> Triple("Backup key replaced", "now ${short(address)}", ActivityUM.Tone.Danger)
-            ActivityView.Kind.HavenReplaced -> Triple("Safe haven changed", "now ${short(address)}", ActivityUM.Tone.Warning)
-            ActivityView.Kind.DelayChanged -> Triple("Protection period changed", "", ActivityUM.Tone.Warning)
-            ActivityView.Kind.SecurityChange -> Triple("Security change", "", ActivityUM.Tone.Warning)
+        data class Row(val title: String, val detail: String, val amount: String?, val icon: ActivityUM.Icon, val tone: ActivityUM.Tone)
+        val row = when (kind) {
+            ActivityView.Kind.Deposited -> Row(
+                if (by.equals(me, ignoreCase = true)) "Moved from Checking" else "Received",
+                if (by.equals(me, ignoreCase = true)) "" else "from ${label(by, me, s)}",
+                plus, ActivityUM.Icon.In, ActivityUM.Tone.Good,
+            )
+            ActivityView.Kind.WithdrawalRequested -> Row("To ${label(address, me, s)}", "Payment #$withdrawalId started", minus, ActivityUM.Icon.Out, ActivityUM.Tone.Warning)
+            ActivityView.Kind.HavenWithdrawalRequested -> Row("To your safe haven", "Move #$withdrawalId started", null, ActivityUM.Icon.Out, ActivityUM.Tone.Warning)
+            ActivityView.Kind.WithdrawalCancelled -> Row("Payment #$withdrawalId cancelled", "Returned to Savings", null, ActivityUM.Icon.Returned, ActivityUM.Tone.Good)
+            ActivityView.Kind.WithdrawalExecuted -> Row("Payment #$withdrawalId delivered", "", null, ActivityUM.Icon.Delivered, ActivityUM.Tone.Neutral)
+            ActivityView.Kind.VoidedReleased -> Row("Payment #$withdrawalId stopped", "Returned to Savings", null, ActivityUM.Icon.Returned, ActivityUM.Tone.Good)
+            ActivityView.Kind.Locked -> Row("Savings locked", who, null, ActivityUM.Icon.Lock, ActivityUM.Tone.Danger)
+            ActivityView.Kind.Unlocked -> Row("Savings unlocked", who, null, ActivityUM.Icon.Unlock, ActivityUM.Tone.Neutral)
+            ActivityView.Kind.ReplacementScheduled -> Row("Spending-key replacement scheduled", "to ${short(address)}", null, ActivityUM.Icon.Key, ActivityUM.Tone.Danger)
+            ActivityView.Kind.ReplacementCancelled -> Row("Spending-key replacement cancelled", "", null, ActivityUM.Icon.Key, ActivityUM.Tone.Good)
+            ActivityView.Kind.PrimaryReplaced -> Row("Spending key replaced", "now ${short(address)}", null, ActivityUM.Icon.Key, ActivityUM.Tone.Danger)
+            ActivityView.Kind.RecoveryReplaced -> Row("Backup key replaced", "now ${label(address, me, s)}", null, ActivityUM.Icon.Key, ActivityUM.Tone.Warning)
+            ActivityView.Kind.HavenReplaced -> Row("Safe haven changed", "now ${short(address)}", null, ActivityUM.Icon.Key, ActivityUM.Tone.Warning)
+            ActivityView.Kind.DelayChanged -> Row("Hold period changed", "", null, ActivityUM.Icon.Key, ActivityUM.Tone.Warning)
+            ActivityView.Kind.SecurityChange -> Row("Security setting updated", "", null, ActivityUM.Icon.Key, ActivityUM.Tone.Neutral)
         }
         // Block times are about 12 s apart on Sepolia; good enough for "how long ago".
         val ago = (snapshotBlock - block).toLong().coerceAtLeast(0) * SECONDS_PER_BLOCK
-        return ActivityUM(title, detail.trim(), ago(ago), SepoliaConfig.EXPLORER_TX + txHash, tone)
+        return ActivityUM(row.title, row.detail.trim(), ago(ago), row.amount, SepoliaConfig.EXPLORER_TX + txHash, row.icon, row.tone)
     }
 
     // ----------------------------------------------------------------- the guided flow
@@ -315,7 +372,11 @@ internal class SafeChainModel @Inject constructor(
             busy = true
             sheet(SheetUM.Working(title, "Checking with Sepolia…", holdCard = false))
             try {
-                val prepared = calls.mapIndexed { i, c -> sender.prepare(from, c.to, c.data, c.value, nonceOffset = i) }
+                val prepared = if (demo != null) {
+                    calls.map { c -> TxSender.Prepared(Eip1559Tx(SepoliaConfig.CHAIN_ID, BigInteger.ZERO, DEMO_FEE, DEMO_FEE, DEMO_GAS, c.to, c.value, c.data), DEMO_GAS * DEMO_FEE) }
+                } else {
+                    calls.mapIndexed { i, c -> sender.prepare(from, c.to, c.data, c.value, nonceOffset = i) }
+                }
                 val fee = prepared.fold(BigInteger.ZERO) { acc, p -> acc + p.maxCostWei }
                 if (by == By.Phone && phoneKeyWei < fee) {
                     sheet(
@@ -358,6 +419,15 @@ internal class SafeChainModel @Inject constructor(
         modelScope.launch {
             busy = true
             try {
+                val d = demo
+                if (d != null) {
+                    sheet(SheetUM.Working(title, if (p.by == By.Card) "Demo: no card needed." else "Demo: no fingerprint needed.", holdCard = p.by == By.Card))
+                    delay(DEMO_STEP_MS)
+                    p.txs.forEach { d.apply(p.from, it.tx.to, it.tx.data, it.tx.value) }
+                    refresh()
+                    if (p.then != null) p.then.invoke() else sheet(SheetUM.Result(ok = true, title = p.doneTitle, text = "Demo: nothing was sent.", url = null))
+                    return@launch
+                }
                 val hashes = p.txs.map { it.tx.signingHash() }
                 val signatures = when (p.by) {
                     By.Card -> {
@@ -426,13 +496,15 @@ internal class SafeChainModel @Inject constructor(
         modelScope.launch {
             busy = true
             try {
-                phoneKeys.checkAvailable()
+                if (demo == null) phoneKeys.checkAvailable()
                 val newSalt = ByteArray(SALT_BYTES).also { SecureRandom().nextBytes(it) }
                 val delay = hours * HOUR
                 fun digest(phone: String) = Eip712.recoveryConsentDigest(acct.address, phone, delay, ZERO_ADDRESS, newSalt)
                 val prompt = PhoneKeyStore.Prompt("Make this phone your backup key", "Only needed if your card is ever lost or stolen")
                 val existing = phoneKey
-                val (phone, consent) = if (existing == null) {
+                val (phone, consent) = if (demo != null) {
+                    DemoChain.PHONE to com.tangem.feature.safechain.chain.Rsv(ByteArray(32), ByteArray(32), 0)
+                } else if (existing == null) {
                     phoneKeys.create(acct.address, prompt) { listOf(digest(it)) }.let { (a, sigs) -> a to sigs.single() }
                 } else {
                     existing to phoneKeys.sign(acct.address, prompt, listOf(digest(existing))).single()
@@ -530,7 +602,14 @@ internal class SafeChainModel @Inject constructor(
 
     // ----------------------------------------------------------------- everyday
 
-    override fun onOpenAddFunds() = sheet(SheetUM.AddFunds(max = fmt(snapshot?.tokenBalance ?: BigInteger.ZERO)))
+    override fun onOpenMove() = sheet(SheetUM.Move(savingsLocked = current()?.locked == true))
+
+    override fun onMoveToSavings() = sheet(SheetUM.AddFunds(max = fmt(snapshot?.tokenBalance ?: BigInteger.ZERO)))
+
+    override fun onMoveToChecking() {
+        val v = current() ?: return
+        sheet(SheetUM.Withdraw(max = fmt(v.available), toChecking = true))
+    }
 
     override fun onOpenWithdraw() {
         val v = current() ?: return
@@ -579,13 +658,17 @@ internal class SafeChainModel @Inject constructor(
             is SheetUM.Withdraw -> {
                 val amount = parseAmount(sh.amount) ?: return sheet(sh.copy(error = "Enter an amount, for example 100."))
                 if (amount > v.available) return sheet(sh.copy(error = "Only ${sh.max} is available."))
-                val to = parseAddress(sh.to) ?: return sheet(sh.copy(error = "Paste the destination's full address (0x…)."))
+                val to = if (sh.toChecking) {
+                    account?.address ?: return
+                } else {
+                    parseAddress(sh.to) ?: return sheet(sh.copy(error = "Paste the destination's full address (0x…)."))
+                }
                 if (to.equals(v.address, ignoreCase = true)) return sheet(sh.copy(error = "That's your Savings itself."))
                 val hours = v.delaySeconds / HOUR
                 review(
-                    title = "Send ${fmt(amount)} ${SepoliaConfig.TOKEN_SYMBOL}",
+                    title = if (sh.toChecking) "Move ${fmt(amount)} ${SepoliaConfig.TOKEN_SYMBOL} to Checking" else "Send ${fmt(amount)} ${SepoliaConfig.TOKEN_SYMBOL}",
                     rows = listOf(
-                        "To" to groupedAddress(to),
+                        "To" to if (sh.toChecking) "Your Checking (this card)\n${groupedAddress(to)}" else groupedAddress(to),
                         "Arrives" to "In ${hours}h. Until then you can cancel, and the money comes straight back.",
                     ),
                     note = "Check every character of the address. You can also check it from another device at safechain.rep.run.",
@@ -637,6 +720,20 @@ internal class SafeChainModel @Inject constructor(
     }
 
     // ----------------------------------------------------------------- emergencies and locks
+
+    override fun onTopUpPhone() {
+        val phone = phoneKey ?: return
+        review(
+            title = "Add emergency fees",
+            rows = listOf(
+                "To" to "This phone's backup key\n${groupedAddress(phone)}",
+                "Amount" to "${fmt(PHONE_GAS_TOP_UP)} Sepolia ETH",
+                "Why" to "So this phone can lock your Savings on its own if your card is ever lost.",
+            ),
+            calls = listOf(Call(phone, ByteArray(0), PHONE_GAS_TOP_UP)),
+            doneTitle = "Emergency fees added",
+        )
+    }
 
     override fun onEmergencyLock() {
         val v = current() ?: return
@@ -877,6 +974,11 @@ internal class SafeChainModel @Inject constructor(
         const val FEE_DECIMALS = 8
         const val SECONDS_PER_BLOCK = 12L
         const val POLICY_NEW_RECOVERY = 1
+        const val HOURS_PER_DAY = 24L
+        const val DEMO_KEY_BYTES = 65
+        const val DEMO_STEP_MS = 900L
+        val DEMO_FEE: BigInteger = BigInteger.valueOf(1_000_000_000)
+        val DEMO_GAS: BigInteger = BigInteger.valueOf(100_000)
 
         /** ETH the card gives the phone's backup key for emergency fees, and the level that triggers it. */
         val PHONE_GAS_TOP_UP: BigInteger = BigInteger.TEN.pow(15).multiply(BigInteger.TWO) // 0.002 ETH
@@ -887,8 +989,13 @@ internal class SafeChainModel @Inject constructor(
         val MAX_UINT: BigInteger = BigInteger.ONE.shiftLeft(256) - BigInteger.ONE
         val UNIT: BigDecimal = BigDecimal.TEN.pow(SepoliaConfig.TOKEN_DECIMALS)
 
+        private val GROUPED = java.text.DecimalFormat("#,##0.##########", java.text.DecimalFormatSymbols(java.util.Locale.US))
+
+        /** Thousands separators, no trailing zeros: 17,700 · 0.002 · 1,234.5. */
         fun fmt(v: BigInteger, decimals: Int = 4): String =
-            BigDecimal(v).divide(UNIT).setScale(decimals, RoundingMode.DOWN).stripTrailingZeros().toPlainString()
+            GROUPED.format(BigDecimal(v).divide(UNIT).setScale(decimals, RoundingMode.DOWN).stripTrailingZeros())
+
+        fun money(v: BigInteger) = "${fmt(v)} ${SepoliaConfig.TOKEN_SYMBOL}"
 
         fun parseAmount(s: String): BigInteger? = runCatching {
             BigDecimal(s.trim().replace(",", "")).multiply(UNIT).toBigIntegerExact().takeIf { it.signum() > 0 }
@@ -903,7 +1010,7 @@ internal class SafeChainModel @Inject constructor(
             val h = seconds / HOUR
             val m = seconds % HOUR / 60
             val s = seconds % 60
-            return if (h > 0) "${h}h ${m}m left" else "${m}m ${s}s left"
+            return if (h > 0) "${h}h ${m}m" else "${m}m ${s}s"
         }
 
         fun ago(seconds: Long): String = when {

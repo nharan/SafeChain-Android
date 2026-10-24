@@ -19,7 +19,7 @@ internal class TxSender(private val endpoints: List<EthRpc>, private val chainId
     suspend fun prepare(from: String, to: String, data: ByteArray, value: BigInteger = BigInteger.ZERO, nonceOffset: Int = 0): Prepared {
         val rpc = endpoints.first()
         // Simulate against every endpoint that answers: if any says it reverts, don't ask for a tap.
-        val estimates = endpoints.map { runCatching { it.estimateGas(from, to, data) } }
+        val estimates = endpoints.map { runCatching { it.estimateGas(from, to, data, value) } }
         estimates.firstOrNull { it.isFailure && it.exceptionOrNull()?.message?.contains("revert", ignoreCase = true) == true }
             ?.let { throw it.exceptionOrNull()!! }
         val gasEstimate = estimates.mapNotNull { it.getOrNull() }.maxOrNull() ?: throw estimates.first().exceptionOrNull()!!

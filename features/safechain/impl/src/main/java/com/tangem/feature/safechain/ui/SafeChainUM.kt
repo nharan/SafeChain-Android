@@ -2,18 +2,28 @@ package com.tangem.feature.safechain.ui
 
 import androidx.compose.runtime.Immutable
 
+/**
+ * The screen as a bank shows it: Checking (the card's own tokens, instant) and Savings (the protected vault,
+ * every payment waits and can be cancelled), a total, upcoming payments and activity.
+ */
 @Immutable
 internal data class SafeChainUM(
     val accountAddress: String? = null,
     val loading: Boolean = true,
     val loadError: String? = null,
+    /** Debug-build demo on a pretend chain (no card, no network). */
+    val demo: Boolean = false,
     val health: HealthUM = HealthUM.Unknown,
-    /** Tokens still on the card itself (not yet protected). */
+    /** Checking + Savings. */
+    val total: String = "—",
+    /** Checking: tokens on the card itself, spendable at once (not protected). */
     val cardBalance: String = "—",
     val gasBalance: String = "—",
     /** This phone's backup key for the card, if it holds one, and the ETH it has for emergency fees. */
     val phoneKey: String? = null,
     val phoneKeyGas: String = "—",
+    /** Too little ETH on the phone key to pay for an emergency lock. */
+    val phoneKeyLow: Boolean = false,
     val vault: VaultUM? = null,
     /** Older vaults of this card that still hold money or have a move under way. */
     val previous: List<PreviousVaultUM> = emptyList(),
@@ -33,15 +43,17 @@ internal data class VaultUM(
     val address: String,
     val balance: String,
     val available: String,
-    /** e.g. "24h". */
-    val delay: String,
+    /** True when some of the balance is held by payments on their way out. */
+    val partlyHeld: Boolean,
+    /** e.g. "24 hours". */
+    val hold: String,
     val locked: Boolean,
     val isPrimary: Boolean,
     val recovery: String,
     /** The backup key is this phone's key, so the phone can lock in an emergency. */
     val backupIsThisPhone: Boolean,
     val haven: String?,
-    /** Red alerts pinned to the top: payments on their way out, a scheduled takeover, a rescue window. */
+    /** Rare, serious warnings (a scheduled spending-key takeover, a rescue window). Payments on their way are in [pending]. */
     val alerts: List<String>,
     val pending: List<WithdrawalUM>,
     val activity: List<ActivityUM>,
@@ -74,9 +86,14 @@ internal data class WithdrawalUM(
     val id: String,
     val amount: String,
     val to: String,
+    /** Who it's going to, in words: "Your Checking", "Your new Savings", or the short address. */
+    val toLabel: String,
     val toHaven: Boolean,
     val isFinal: Boolean,
+    /** "Arrives in 23h 12m", or null once final. */
     val countdown: String?,
+    /** How much of the hold has passed, 0..1, for the progress bar. */
+    val progress: Float,
     val deadline: String,
     val canCancel: Boolean,
     val canRelease: Boolean,
@@ -84,12 +101,22 @@ internal data class WithdrawalUM(
 )
 
 @Immutable
-internal data class ActivityUM(val title: String, val detail: String, val time: String, val url: String, val tone: Tone) {
+internal data class ActivityUM(
+    val title: String,
+    val detail: String,
+    val time: String,
+    /** Signed amount ("+300", "−100"), or null when nothing moved. */
+    val amount: String?,
+    val url: String,
+    val icon: Icon,
+    val tone: Tone,
+) {
     enum class Tone { Neutral, Good, Warning, Danger }
+    enum class Icon { In, Out, Returned, Delivered, Lock, Unlock, Key }
 }
 
 /**
- * Creating a vault. By default this phone becomes the backup key: one fingerprint, one card tap. The other
+ * Opening Savings. By default this phone becomes the backup key: one fingerprint, one card tap. The other
  * path (another wallet as the backup) keeps the consent link, with Copy and Paste so nothing is typed.
  */
 @Immutable
@@ -102,13 +129,27 @@ internal data class SetupUM(
     val error: String? = null,
 )
 
-/** What a bottom sheet shows. */
+/**
+ * What's shown over the screen. Forms with text fields (Send, Move, another wallet) are full pages, so the
+ * keyboard never fights a bottom sheet; Review, Working and Result are bottom sheets.
+ */
 internal sealed interface SheetUM {
     data object None : SheetUM
 
+    /** Choose a direction: Checking → Savings or Savings → Checking (not while Savings is locked). */
+    data class Move(val savingsLocked: Boolean) : SheetUM
+
+    /** Checking → Savings (one card tap, instant). */
     data class AddFunds(val amount: String = "", val max: String, val error: String? = null) : SheetUM
 
-    data class Withdraw(val amount: String = "", val to: String = "", val max: String, val error: String? = null) : SheetUM
+    /** Savings → anyone, or → your own Checking ([toChecking]); waits out the hold either way. */
+    data class Withdraw(
+        val amount: String = "",
+        val to: String = "",
+        val max: String,
+        val toChecking: Boolean = false,
+        val error: String? = null,
+    ) : SheetUM
 
     data class Receive(val address: String) : SheetUM
 
@@ -141,7 +182,7 @@ internal interface SafeChainActions {
     fun onBack()
     fun onRefresh()
 
-    // setup
+    // opening Savings
     fun onSetupDelayChange(value: String)
     fun onSetupCreate()
     fun onSetupUseOtherWallet(other: Boolean)
@@ -153,9 +194,11 @@ internal interface SafeChainActions {
     fun onScanSignature()
 
     // everyday
-    fun onOpenAddFunds()
     fun onOpenWithdraw()
     fun onOpenReceive()
+    fun onOpenMove()
+    fun onMoveToSavings()
+    fun onMoveToChecking()
     fun onAmountChange(value: String)
     fun onDestinationChange(value: String)
     fun onScanDestination()
@@ -165,6 +208,7 @@ internal interface SafeChainActions {
     fun onReleaseWithdrawal(id: String)
 
     // emergencies (the phone's backup key) and the card's own lock
+    fun onTopUpPhone()
     fun onEmergencyLock()
     fun onUnlock()
     fun onLock()
