@@ -655,7 +655,7 @@ internal class SafeChainModel @Inject constructor(
                 SheetUM.Result(
                     ok = true,
                     title = "Savings locked",
-                    text = "Nothing can leave. When you're safe, unlock with this phone. If the card is gone for good, your Tangem backup card is the same spending key.",
+                    text = "Nothing can leave, and any payment on its way was stopped. When you're safe, unlock with this phone: stopped payments come back to your balance. If the card is gone for good, your Tangem backup card is the same spending key.",
                     url = null,
                 ),
             )
@@ -664,10 +664,19 @@ internal class SafeChainModel @Inject constructor(
 
     override fun onUnlock() {
         val v = current() ?: return
+        // Payments the lock stopped still hold their reservation; release them in the same fingerprint, so
+        // the money is spendable again the moment the vault unlocks.
+        val stopped = v.withdrawals.filter { it.voided }
         review(
             title = "Unlock Savings",
-            rows = listOf("Savings" to groupedAddress(v.address), "After this" to "Your card can send again."),
-            calls = listOf(Call(v.address, SafeChainCalls.unlock())),
+            rows = buildList {
+                add("Savings" to groupedAddress(v.address))
+                if (stopped.isNotEmpty()) {
+                    add("Stopped payments" to "${stopped.size} (${fmt(stopped.fold(BigInteger.ZERO) { a, w -> a + w.amount })} ${SepoliaConfig.TOKEN_SYMBOL}) come back to your balance")
+                }
+                add("After this" to "Your card can send again.")
+            },
+            calls = listOf(Call(v.address, SafeChainCalls.unlock())) + stopped.map { Call(v.address, SafeChainCalls.releaseVoided(it.id)) },
             doneTitle = "Savings unlocked",
             by = By.Phone,
         )

@@ -88,6 +88,8 @@ internal object SafeChainCalls {
     fun executeWithdrawal(id: BigInteger) = Abi.call("executeWithdrawal(uint256)", uint(id))
     fun lock() = Abi.call("lock()")
     fun unlock() = Abi.call("unlock()")
+    /** Frees the reservation of a payment a lock stopped, so the money is spendable again. Anyone may call it. */
+    fun releaseVoided(id: BigInteger) = Abi.call("releaseVoided(uint256)", uint(id))
     fun proposeRecoveryChange(newRecovery: String, consent: ByteArray) =
         Abi.call("proposeRecoveryChange(address,bytes)", addr(newRecovery), Abi.Arg.DynBytes(consent))
     fun approvePolicyChange(nonce: BigInteger) = Abi.call("approvePolicyChange(uint256)", uint(nonce))
@@ -136,6 +138,7 @@ internal object SafeChainCalls {
     fun available(token: String) = Abi.call("available(address)", addr(token))
     fun getWithdrawal(id: BigInteger) = Abi.call("getWithdrawal(uint256)", uint(id))
     fun withdrawalState(id: BigInteger) = Abi.call("withdrawalState(uint256)", uint(id))
+    fun isVoid(id: BigInteger) = Abi.call("isVoid(uint256)", uint(id))
     /** (kind, proposer, approved, eta, newAddress, newDelay): six static words. */
     fun pendingPolicyChange() = Abi.call("pendingPolicyChange()")
 }

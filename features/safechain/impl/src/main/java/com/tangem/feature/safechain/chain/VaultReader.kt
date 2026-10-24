@@ -15,6 +15,8 @@ internal data class WithdrawalView(
     val initiator: String,
     val toHaven: Boolean,
     val state: Int,
+    /** Stopped by a lock but still holding its reservation until releaseVoided (shown as state 4). */
+    val voided: Boolean = false,
     val disputed: Boolean = false,
 )
 
@@ -77,6 +79,7 @@ internal data class AccountSnapshot(
                     deadline = ws.minOf { it.deadline },
                     amount = ws.maxOf { it.amount },
                     toHaven = ws.all { it.toHaven },
+                    voided = ws.any { it.voided },
                     disputed = ws.size < versions.size || ws.toSet().size > 1,
                 )
             }.sortedByDescending { it.id }
@@ -160,6 +163,7 @@ internal class VaultReader(private val token: String = SepoliaConfig.TOKEN, priv
         val ids = generateSequence(count) { it - BigInteger.ONE }.takeWhile { it >= BigInteger.ONE }.take(MAX_WITHDRAWALS).toList()
         val withdrawals = ids.map { id ->
             val w = Abi.words(word(SafeChainCalls.getWithdrawal(id)))
+            val state = Abi.uint(word(SafeChainCalls.withdrawalState(id))).toInt()
             WithdrawalView(
                 id = id,
                 token = Abi.address(w[0]),
@@ -169,7 +173,8 @@ internal class VaultReader(private val token: String = SepoliaConfig.TOKEN, priv
                 initiator = Abi.address(w[4]),
                 toHaven = Abi.bool(w[7]),
                 amount = Abi.uint(w[8]),
-                state = Abi.uint(word(SafeChainCalls.withdrawalState(id))).toInt(),
+                state = state,
+                voided = state == STATE_CANCELLED && Abi.bool(word(SafeChainCalls.isVoid(id))),
             )
         }
         return VaultView(
@@ -207,6 +212,7 @@ internal class VaultReader(private val token: String = SepoliaConfig.TOKEN, priv
         /** The newest withdrawals shown per vault (bounded work per refresh). */
         const val MAX_WITHDRAWALS = 25
         const val MAX_ACTIVITY = 30
+        private const val STATE_CANCELLED = 4
 
         val VAULT_CREATED = eventTopic("VaultCreated(address,address,address,uint64,bytes32)")
         val PRIMARY_REPLACED = eventTopic("PrimaryReplaced(address,address)")
