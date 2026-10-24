@@ -463,6 +463,8 @@ private fun PreviousRow(p: PreviousVaultUM, actions: SafeChainActions) = Row(
         Text(p.balance, style = TangemTheme.typography.body2, fontWeight = FontWeight.SemiBold, color = TangemTheme.colors.text.primary1, maxLines = 1)
         when {
             moving?.canRelease == true -> CompactButton("Bring now", Green, GreenBg) { actions.onReleaseFromPrevious(p.address, moving.id) }
+            // Like every other move: cancellable until it arrives.
+            moving?.canCancel == true -> CompactButton("Cancel", Red, RedBg) { actions.onCancelFromPrevious(p.address, moving.id) }
             p.canMove && moving == null -> CompactButton("Move", TangemTheme.colors.text.primary1, TangemTheme.colors.button.secondary) {
                 actions.onMoveFromPrevious(p.address)
             }

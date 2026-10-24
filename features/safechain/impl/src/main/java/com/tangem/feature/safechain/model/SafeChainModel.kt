@@ -1488,6 +1488,26 @@ internal class SafeChainModel @Inject constructor(
         )
     }
 
+    /** Stop a move out of an older Savings before it arrives: it stays in that Savings. */
+    override fun onCancelFromPrevious(vault: String, id: String) {
+        val me = account?.address ?: return
+        val old = ownVaults().firstOrNull { it.address.equals(vault, ignoreCase = true) } ?: return
+        val w = old.withdrawals.firstOrNull { it.id.toString() == id && it.state == 1 } ?: return
+        val amount = money(w.amount, coin(w.token))
+        review(
+            title = "Cancel this move",
+            rows = listOf(
+                "Amount" to amount,
+                "Was going to" to "${label(w.to, me, snapshot ?: return)}\n${groupedAddress(w.to)}",
+            ),
+            note = "It stays in your Old Savings. You can move it again any time.",
+            calls = listOf(Call(old.address, SafeChainCalls.cancelWithdrawal(w.id))),
+            doneTitle = "Move cancelled",
+        ) {
+            sheet(SheetUM.Result(ok = true, title = "Move cancelled", text = "$amount is back in your Old Savings.", url = null))
+        }
+    }
+
     override fun onReleaseFromPrevious(vault: String, id: String) {
         val old = snapshot?.vaults?.firstOrNull { it.address.equals(vault, ignoreCase = true) } ?: return
         release(old, id)

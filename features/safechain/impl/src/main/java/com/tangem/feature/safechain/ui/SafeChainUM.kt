@@ -351,6 +351,7 @@ internal interface SafeChainActions {
     // older vaults
     fun onMoveFromPrevious(vault: String)
     fun onReleaseFromPrevious(vault: String, id: String)
+    fun onCancelFromPrevious(vault: String, id: String)
 
     // sheets
     fun onSign()
