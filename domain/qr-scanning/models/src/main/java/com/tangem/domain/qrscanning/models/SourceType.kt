@@ -5,4 +5,5 @@ enum class SourceType {
     SEND,
     MAIN_SCREEN,
     ADDRESS_BOOK,
+    SAFECHAIN,
 }

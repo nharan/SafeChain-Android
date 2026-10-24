@@ -24,6 +24,7 @@ internal class InitializeQrScanningStateTransformer(
             SourceType.WALLET_CONNECT -> resourceReference(R.string.wc_qr_scan_hint)
             SourceType.MAIN_SCREEN -> resourceReference(R.string.main_qr_scan_hint)
             SourceType.ADDRESS_BOOK -> resourceReference(R.string.main_qr_scan_hint)
+            SourceType.SAFECHAIN -> resourceReference(R.string.main_qr_scan_hint)
         }
 
         return QrScanningState(
@@ -50,7 +51,7 @@ internal class InitializeQrScanningStateTransformer(
                 title = null,
                 startIcon = R.drawable.ic_close_24,
             )
-            SourceType.ADDRESS_BOOK -> TopBarConfig(
+            SourceType.ADDRESS_BOOK, SourceType.SAFECHAIN -> TopBarConfig(
                 title = null,
                 startIcon = R.drawable.ic_back_24,
             )

@@ -25,6 +25,9 @@ dependencies {
     implementation(projects.domain.common)
     implementation(projects.domain.wallets)
     implementation(projects.domain.card)
+    implementation(projects.domain.qrScanning)
+    implementation(projects.domain.qrScanning.models)
+    implementation(projects.common.routing)
     // endregion
 
     // region Tangem SDK — Keccak, UnmarshalHelper (recovery id), card signing types

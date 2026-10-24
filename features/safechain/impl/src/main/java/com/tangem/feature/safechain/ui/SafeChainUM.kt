@@ -6,17 +6,13 @@ import androidx.compose.runtime.Immutable
 internal data class SafeChainUM(
     val accountAddress: String? = null,
     val loading: Boolean = true,
-    val error: String? = null,
+    val loadError: String? = null,
     val health: HealthUM = HealthUM.Unknown,
-    val ethBalance: String = "—",
-    val tokenBalance: String = "—",
-    val vaults: List<VaultUM> = emptyList(),
-    /** Something in progress ("Tap your card…", "Waiting for the network…"). */
-    val busy: String? = null,
-    /** Result of the last action. */
-    val message: String? = null,
-    val create: CreateVaultUM = CreateVaultUM(),
-    val confirm: ConfirmUM? = null,
+    val spendingBalance: String = "—",
+    val gasBalance: String = "—",
+    val vault: VaultUM? = null,
+    val setup: SetupUM = SetupUM(),
+    val sheet: SheetUM = SheetUM.None,
 )
 
 internal sealed interface HealthUM {
@@ -31,18 +27,17 @@ internal data class VaultUM(
     val address: String,
     val balance: String,
     val available: String,
+    val protection: String,
     val locked: Boolean,
     val isPrimary: Boolean,
     val isRecovery: Boolean,
     val recovery: String,
     val haven: String?,
-    val protection: String,
-    val warnings: List<String>,
-    val withdrawals: List<WithdrawalUM>,
+    /** Red alerts pinned to the top: pending withdrawals, a scheduled takeover, a rescue window. */
+    val alerts: List<String>,
+    val pending: List<WithdrawalUM>,
+    val activity: List<ActivityUM>,
     val disputed: Boolean,
-    val withdrawAmount: String = "",
-    val withdrawTo: String = "",
-    val depositAmount: String = "",
 )
 
 @Immutable
@@ -51,47 +46,79 @@ internal data class WithdrawalUM(
     val amount: String,
     val to: String,
     val toHaven: Boolean,
-    val stateLabel: String,
+    val isFinal: Boolean,
     val countdown: String?,
+    val deadline: String,
     val canCancel: Boolean,
-    val canExecute: Boolean,
+    val canRelease: Boolean,
     val disputed: Boolean,
 )
 
 @Immutable
-internal data class CreateVaultUM(
+internal data class ActivityUM(val title: String, val detail: String, val time: String, val url: String, val tone: Tone) {
+    enum class Tone { Neutral, Good, Warning, Danger }
+}
+
+/** Creating a vault: four steps on one card, with Copy and Paste so nothing is typed across devices. */
+@Immutable
+internal data class SetupUM(
     val recovery: String = "",
     val delayHours: String = "24",
     val consentLink: String? = null,
-    val consentSignature: String = "",
+    val signature: String = "",
+    val error: String? = null,
 )
 
-/** What the card is about to sign, shown in full before the tap: the card itself has no screen. */
-@Immutable
-internal data class ConfirmUM(
-    val title: String,
-    val lines: List<String>,
-    val maxFee: String,
-)
+/** What a bottom sheet shows. */
+internal sealed interface SheetUM {
+    data object None : SheetUM
+
+    data class AddFunds(val amount: String = "", val max: String, val error: String? = null) : SheetUM
+
+    data class Withdraw(val amount: String = "", val to: String = "", val max: String, val error: String? = null) : SheetUM
+
+    /** Exactly what the card is about to sign, in full, before the tap: the card itself has no screen. */
+    data class Review(
+        val title: String,
+        val step: String?,
+        val rows: List<Pair<String, String>>,
+        val note: String?,
+        val fee: String,
+        val danger: Boolean = false,
+    ) : SheetUM
+
+    data class Working(val title: String, val text: String, val holdCard: Boolean) : SheetUM
+
+    data class Result(val ok: Boolean, val title: String, val text: String, val url: String?) : SheetUM
+}
 
 internal interface SafeChainActions {
     fun onBack()
     fun onRefresh()
-    fun onDismissMessage()
-    fun onRecoveryChange(value: String)
-    fun onDelayHoursChange(value: String)
-    fun onStartCreate()
-    fun onConsentSignatureChange(value: String)
-    fun onCreateVault()
-    fun onDepositAmountChange(vault: String, value: String)
-    fun onDeposit(vault: String)
-    fun onWithdrawAmountChange(vault: String, value: String)
-    fun onWithdrawToChange(vault: String, value: String)
-    fun onRequestWithdrawal(vault: String)
-    fun onCancelWithdrawal(vault: String, id: String)
-    fun onExecuteWithdrawal(vault: String, id: String)
-    fun onLock(vault: String)
-    fun onMoveToHaven(vault: String)
-    fun onConfirm()
-    fun onDismissConfirm()
+
+    // setup
+    fun onSetupRecoveryChange(value: String)
+    fun onSetupDelayChange(value: String)
+    fun onSetupMakeLink()
+    fun onSetupSignatureChange(value: String)
+    fun onSetupCreate()
+    fun onScanRecovery()
+    fun onScanSignature()
+
+    // vault actions
+    fun onOpenAddFunds()
+    fun onOpenWithdraw()
+    fun onAmountChange(value: String)
+    fun onDestinationChange(value: String)
+    fun onScanDestination()
+    fun onMax()
+    fun onContinue()
+    fun onCancelWithdrawal(id: String)
+    fun onReleaseWithdrawal(id: String)
+    fun onLock()
+    fun onMoveToHaven()
+
+    // sheets
+    fun onSign()
+    fun onCloseSheet()
 }

@@ -31,6 +31,8 @@ internal data class VaultView(
     val previousPrimary: String,
     val vetoUntil: Long,
     val withdrawals: List<WithdrawalView>,
+    /** Newest first, at most [VaultReader.MAX_ACTIVITY]. */
+    val activity: List<ActivityView> = emptyList(),
     val disputed: Boolean = false,
 )
 
@@ -78,6 +80,9 @@ internal data class AccountSnapshot(
                 pendingPrimary = versions.firstOrNull { it.pendingPrimary != ZERO_ADDRESS }?.pendingPrimary ?: ZERO_ADDRESS,
                 vetoUntil = versions.map { it.vetoUntil }.filter { it > 0 }.minOrNull() ?: 0,
                 withdrawals = withdrawals,
+                // Union of what any endpoint reported (by transaction and log position), newest first.
+                activity = versions.flatMap { it.activity }.distinctBy { it.txHash to it.logIndex }
+                    .sortedWith(compareByDescending<ActivityView> { it.block }.thenByDescending { it.logIndex }),
                 disputed = !reportedByAll || versions.toSet().size > 1,
             )
         }
@@ -169,6 +174,10 @@ internal class VaultReader(private val token: String = SepoliaConfig.TOKEN, priv
             previousPrimary = previous,
             vetoUntil = vetoUntil,
             withdrawals = withdrawals,
+            activity = logs(rpc, listOf(vault), emptyList(), n)
+                .mapNotNull(ActivityView::decode)
+                .sortedWith(compareByDescending<ActivityView> { it.block }.thenByDescending { it.logIndex })
+                .take(MAX_ACTIVITY),
         )
     }
 
@@ -177,6 +186,7 @@ internal class VaultReader(private val token: String = SepoliaConfig.TOKEN, priv
         private const val VAULTS_PER_QUERY = 200
         /** The newest withdrawals shown per vault (bounded work per refresh). */
         const val MAX_WITHDRAWALS = 25
+        const val MAX_ACTIVITY = 30
 
         val VAULT_CREATED = eventTopic("VaultCreated(address,address,address,uint64,bytes32)")
         val PRIMARY_REPLACED = eventTopic("PrimaryReplaced(address,address)")

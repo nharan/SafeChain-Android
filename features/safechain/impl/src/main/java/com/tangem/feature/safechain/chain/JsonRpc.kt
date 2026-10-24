@@ -37,7 +37,14 @@ internal interface EthRpc {
 }
 
 internal data class BlockHeader(val number: BigInteger, val hash: String, val timestamp: Long, val baseFee: BigInteger)
-internal data class LogEntry(val address: String, val topics: List<String>, val data: String, val blockNumber: BigInteger)
+internal data class LogEntry(
+    val address: String,
+    val topics: List<String>,
+    val data: String,
+    val blockNumber: BigInteger,
+    val txHash: String = "",
+    val logIndex: Long = 0,
+)
 internal data class Receipt(val status: Boolean, val from: String, val blockNumber: BigInteger)
 
 internal class RpcError(message: String) : Exception(message)
@@ -104,6 +111,8 @@ internal class OkHttpEthRpc(override val url: String, private val http: OkHttpCl
                 topics = o.getValue("topics").jsonArray.map { it.str().lowercase() },
                 data = o.getValue("data").str(),
                 blockNumber = o.getValue("blockNumber").big(),
+                txHash = o["transactionHash"]?.str()?.lowercase().orEmpty(),
+                logIndex = o["logIndex"]?.big()?.toLong() ?: 0,
             )
         }
     }

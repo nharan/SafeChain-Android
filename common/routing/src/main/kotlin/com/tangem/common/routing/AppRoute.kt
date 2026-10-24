@@ -224,6 +224,7 @@ sealed class AppRoute(val path: String) : Route {
                     WalletConnect -> ""
                     MainScreen -> ""
                     AddressBook -> ""
+                    SafeChain -> ""
                 }
 
             data class Send(val networkName: String) : Source()
@@ -233,6 +234,9 @@ sealed class AppRoute(val path: String) : Route {
             data object MainScreen : Source()
 
             data object AddressBook : Source()
+
+            /** SafeChain: recovery key address, withdrawal destination, or the recovery key's consent. */
+            data object SafeChain : Source()
         }
     }
 
