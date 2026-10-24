@@ -53,6 +53,12 @@ internal data class VaultView(
     /** Newest first, at most [VaultReader.MAX_ACTIVITY]. */
     val activity: List<ActivityView> = emptyList(),
     val disputed: Boolean = false,
+    /**
+     * The factory's VaultCreated names this account as primary. The factory only lets the primary create its
+     * own vault, so that event can't be forged on-chain. A vault that reached this account through a key
+     * rotation can be anyone's: replacePrimary needs no consent from the new key.
+     */
+    val createdByMe: Boolean = false,
 ) {
     val holdsAnything: Boolean get() = balances.values.any { it.signum() > 0 }
 }
@@ -93,6 +99,8 @@ internal data class AccountSnapshot(
             val first = all.first()
             val byVault = all.flatMap { it.vaults }.groupBy { it.address.lowercase() }
             return first.copy(
+                // Countdowns run from the latest time any endpoint vouches for, not the first reading's.
+                chainTime = all.maxOf { it.chainTime },
                 ethBalance = all.minOf { it.ethBalance },
                 tokenBalances = all.map { it.tokenBalances }.minPerToken(),
                 escrowAllowances = all.map { it.escrowAllowances }.minPerToken(),
@@ -140,6 +148,8 @@ internal data class AccountSnapshot(
                 activity = versions.flatMap { it.activity }.distinctBy { it.txHash to it.logIndex }
                     .sortedWith(compareByDescending<ActivityView> { it.block }.thenByDescending { it.logIndex }),
                 disputed = !reportedByAll || versions.toSet().size > 1,
+                // Trusted as the user's own only if every endpoint says so.
+                createdByMe = reportedByAll && versions.all { it.createdByMe },
             )
         }
     }
@@ -154,13 +164,20 @@ internal class VaultReader(
 
     suspend fun snapshot(rpc: EthRpc, block: BlockHeader, account: String): AccountSnapshot {
         val n = block.number
-        val vaults = findVaults(rpc, n, account).mapNotNull { readVault(rpc, n, it, account, block.timestamp) }
+        val vaults = findVaults(rpc, n, account).mapNotNull { (v, mine) -> readVault(rpc, n, v, account, block.timestamp)?.copy(createdByMe = mine) }
         val me = topicOf(account)
+        // Sent and received are kept apart: anyone can create payments to this address (cheaply, in a worthless
+        // token), and those must never push the account's own still-cancellable payments out of view.
+        val known = tokens.map { it.lowercase() }.toSet()
         val sent = logs(rpc, listOf(escrow), listOf(PAYMENT_CREATED, null, me), n)
+            .sortedByDescending { Hex.toBigInteger(it.topics[1]) }
+            .take(MAX_SENT_PAYMENTS)
         val received = logs(rpc, listOf(escrow), listOf(PAYMENT_CREATED, null, null, me), n)
-        val payments = (sent + received).distinctBy { it.topics[1] }
+            .filter { log -> Abi.words(Hex.decode(log.data)).firstOrNull()?.let(Abi::address)?.lowercase() in known }
             .sortedByDescending { Hex.toBigInteger(it.topics[1]) }
             .take(MAX_PAYMENTS)
+        val payments = (sent + received).distinctBy { it.topics[1] }
+            .sortedByDescending { Hex.toBigInteger(it.topics[1]) }
             .map { readPayment(rpc, n, Hex.toBigInteger(it.topics[1])) }
         return AccountSnapshot(
             address = account,
@@ -223,11 +240,14 @@ internal class VaultReader(
             val id = Hex.toBigInteger(log.topics[1])
             if (id in ids) base(kind, log).copy(withdrawalId = id, token = tokenOf[id], by = log.topics.getOrNull(2)?.let(::addressFromTopic)) else null
         }
+        // Zero-amount transfers are skipped: anyone can emit Transfer(you → them, 0) with transferFrom and no
+        // approval, to plant a look-alike address in "your" history (address poisoning).
+        fun nonZero(log: LogEntry) = (amountWord(log, 0) ?: BigInteger.ZERO).signum() > 0
         val transfersOut = logs(rpc, tokens, listOf(ERC20_TRANSFER, me), n)
-            .filter { addressFromTopic(it.topics[2]).lowercase() !in own }
+            .filter { addressFromTopic(it.topics[2]).lowercase() !in own && nonZero(it) }
             .map { base(ActivityView.Kind.CheckingSent, it).copy(token = it.address, amount = amountWord(it, 0), address = addressFromTopic(it.topics[2]), by = account) }
         val transfersIn = logs(rpc, tokens, listOf(ERC20_TRANSFER, null, me), n)
-            .filter { addressFromTopic(it.topics[1]).lowercase() !in own }
+            .filter { addressFromTopic(it.topics[1]).lowercase() !in own && nonZero(it) }
             .map { base(ActivityView.Kind.CheckingReceived, it).copy(token = it.address, amount = amountWord(it, 0), address = addressFromTopic(it.topics[1])) }
         return (created + outcomes + transfersOut + transfersIn)
             .sortedWith(compareByDescending<ActivityView> { it.block }.thenByDescending { it.logIndex })
@@ -239,9 +259,10 @@ internal class VaultReader(
      * joined later by a key rotation): VaultCreated (primary or recovery) from the factory, and key
      * rotations asked only of the factory's own vaults (public RPCs refuse address-less log queries).
      */
-    private suspend fun findVaults(rpc: EthRpc, to: BigInteger, account: String): List<String> {
+    private suspend fun findVaults(rpc: EthRpc, to: BigInteger, account: String): List<Pair<String, Boolean>> {
         val me = topicOf(account)
         val created = logs(rpc, listOf(factory), listOf(VAULT_CREATED), to)
+        val mine = created.filter { it.topics.getOrNull(2) == me }.map { addressFromTopic(it.topics[1]) }.toSet()
         val candidates = created.filter { it.topics.getOrNull(2) == me || it.topics.getOrNull(3) == me }
             .map { addressFromTopic(it.topics[1]) }
             .toCollection(LinkedHashSet())
@@ -251,7 +272,7 @@ internal class VaultReader(
             logs(rpc, batch, listOf(PRIMARY_REPLACED, me), to).forEach { candidates += checksumAddress(it.address) }
             logs(rpc, batch, listOf(RECOVERY_REPLACED, null, me), to).forEach { candidates += checksumAddress(it.address) }
         }
-        return candidates.filter { Abi.bool(rpc.call(factory, SafeChainCalls.isVault(it), to)) }
+        return candidates.filter { Abi.bool(rpc.call(factory, SafeChainCalls.isVault(it), to)) }.map { it to (it in mine) }
     }
 
     private suspend fun logs(rpc: EthRpc, addresses: List<String>, topics: List<String?>, to: BigInteger): List<LogEntry> {
@@ -277,10 +298,24 @@ internal class VaultReader(
         if (!isMine) return null
 
         val count = Abi.uint(word(SafeChainCalls.view("withdrawalCount")))
-        val ids = generateSequence(count) { it - BigInteger.ONE }.takeWhile { it >= BigInteger.ONE }.take(MAX_WITHDRAWALS).toList()
-        val withdrawals = ids.map { id ->
-            val w = Abi.words(word(SafeChainCalls.getWithdrawal(id)))
+        // The contract's count of ordinary withdrawals still holding money (pending, final, or stopped by a lock
+        // and not yet released). A thief with the card could bury one under many requested-and-cancelled
+        // ones, so the scan goes back until every one of them is found, not just the newest few.
+        val stillOpen = Abi.uint(word(SafeChainCalls.view("pendingWithdrawals"))).toInt()
+        val chosen = mutableListOf<Pair<BigInteger, Int>>()
+        var found = 0
+        var id = count
+        var scanned = 0
+        while (id >= BigInteger.ONE && scanned < MAX_WITHDRAWAL_SCAN && (scanned < MAX_WITHDRAWALS || found < stillOpen)) {
             val state = Abi.uint(word(SafeChainCalls.withdrawalState(id))).toInt()
+            val open = state == 1 || state == 2 || (state == STATE_CANCELLED && Abi.bool(word(SafeChainCalls.isVoid(id))))
+            if (open) found++
+            if (open || scanned < MAX_WITHDRAWALS) chosen += id to state
+            scanned++
+            id -= BigInteger.ONE
+        }
+        val withdrawals = chosen.map { (id, state) ->
+            val w = Abi.words(word(SafeChainCalls.getWithdrawal(id)))
             WithdrawalView(
                 id = id,
                 token = Abi.address(w[0]),
@@ -351,6 +386,12 @@ internal class VaultReader(
         private const val VAULTS_PER_QUERY = 200
         /** The newest withdrawals shown per vault (bounded work per refresh). */
         const val MAX_WITHDRAWALS = 25
+
+        /** How far back to look for a withdrawal still holding money (bounded work per refresh). */
+        const val MAX_WITHDRAWAL_SCAN = 1_000
+
+        /** The account's own escrow payments, newest first: kept apart from (spammable) received ones. */
+        const val MAX_SENT_PAYMENTS = 100
         const val MAX_ACTIVITY = 30
         private const val STATE_CANCELLED = 4
 

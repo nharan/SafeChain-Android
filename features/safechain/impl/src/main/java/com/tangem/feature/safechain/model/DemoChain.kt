@@ -334,6 +334,8 @@ internal class DemoChain(private val now: () -> Long = { System.currentTimeMilli
         policyNonce = v.policyNonce,
         policy = v.policy,
         activity = v.activity.sortedByDescending { it.block },
+        // Every demo vault was opened by the card itself (as the factory requires of a primary).
+        createdByMe = true,
     )
 
     @Suppress("LongParameterList")

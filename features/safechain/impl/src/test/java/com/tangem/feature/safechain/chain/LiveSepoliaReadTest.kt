@@ -28,5 +28,9 @@ internal class LiveSepoliaReadTest {
         assertThat(checked.value.tokenBalances.keys).containsExactlyElementsIn(SepoliaConfig.TOKENS.map { it.key })
         assertThat(checked.value.tokenBalances.of(SepoliaConfig.TOKEN)).isGreaterThan(BigInteger.ZERO)
         assertThat(checked.value.ethBalance).isGreaterThan(BigInteger.ZERO)
+        // The card opened its vaults itself, so each is recognised as its own (the others would be ignored).
+        val own = checked.value.vaults.filter { it.primary.equals(card, ignoreCase = true) }
+        assertThat(own).isNotEmpty()
+        assertThat(own.all { it.createdByMe }).isTrue()
     }
 }

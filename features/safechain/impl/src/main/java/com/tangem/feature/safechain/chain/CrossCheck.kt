@@ -32,9 +32,13 @@ internal class CrossCheckedReader(private val endpoints: List<EthRpc>) {
         endpoints.indices.filter { heads[it].isFailure }.forEach { problems += "${host(endpoints[it].url)}: down" }
         if (live.isEmpty()) throw RpcError("No RPC endpoint is reachable")
 
+        // Pinned to the lowest head any live endpoint reports, and every endpoint is read at that block. An
+        // endpoint claiming a far-higher head can't push an honest one out as "behind" and be read alone
+        // (security review 2026-10-24): data a few blocks old but cross-checked beats fresh data from one source.
         val top = live.maxOf { heads[it].getOrThrow() }
-        val fresh = live.filter { top - heads[it].getOrThrow() <= MAX_HEAD_LAG }
-        (live - fresh.toSet()).forEach { problems += "${host(endpoints[it].url)}: ${top - heads[it].getOrThrow()} blocks behind" }
+        val fresh = live
+        live.filter { top - heads[it].getOrThrow() > MAX_HEAD_LAG }
+            .forEach { problems += "${host(endpoints[it].url)}: ${top - heads[it].getOrThrow()} blocks behind the other" }
         val pin = fresh.minOf { heads[it].getOrThrow() }
 
         val blocks = fresh.map { i -> async { i to runCatching { endpoints[i].block(pin) } } }.map { it.await() }

@@ -8,6 +8,9 @@ import java.math.BigInteger
  * from the RPC endpoints. The contract is the authority: the call is simulated first (eth_estimateGas
  * reverts with the contract's reason), and the receipt is checked to have come from the card's address.
  */
+/** Broadcast, but no receipt yet: it may still be included, so it must not be sent again. */
+internal class NotMinedYet(val txHash: String) : Exception("Sent, not included yet ($txHash)")
+
 internal class TxSender(private val endpoints: List<EthRpc>, private val chainId: Long = SepoliaConfig.CHAIN_ID) {
 
     data class Prepared(val tx: Eip1559Tx, val maxCostWei: BigInteger)
@@ -24,10 +27,15 @@ internal class TxSender(private val endpoints: List<EthRpc>, private val chainId
             ?.let { throw it.exceptionOrNull()!! }
         val gasEstimate = estimates.mapNotNull { it.getOrNull() }.maxOrNull() ?: throw estimates.first().exceptionOrNull()!!
         val gas = gasEstimate * GAS_MARGIN_NUM / GAS_MARGIN_DEN
-        val nonce = (endpoints.mapNotNull { runCatching { it.nonce(from) }.getOrNull() }.maxOrNull() ?: rpc.nonce(from)) +
-            BigInteger.valueOf(nonceOffset.toLong())
-        val baseFee = rpc.block(null).baseFee
-        val tip = runCatching { rpc.maxPriorityFee() }.getOrDefault(DEFAULT_TIP).max(MIN_TIP)
+        // The next transaction number must agree: one endpoint inflating it would leave the signed transaction
+        // stuck behind a gap, to go through unexpectedly later (security review 2026-10-24).
+        val nonces = endpoints.mapNotNull { runCatching { it.nonce(from) }.getOrNull() }.distinct()
+        if (nonces.size > 1) throw RpcError("The data sources disagree on the next transaction number. Try again in a moment.")
+        val nonce = (nonces.firstOrNull() ?: rpc.nonce(from)) + BigInteger.valueOf(nonceOffset.toLong())
+        // Fees: the higher base fee either endpoint reports (so it gets included), and a capped tip (one endpoint
+        // can't make the card overpay validators).
+        val baseFee = endpoints.mapNotNull { runCatching { it.block(null).baseFee }.getOrNull() }.maxOrNull() ?: rpc.block(null).baseFee
+        val tip = runCatching { rpc.maxPriorityFee() }.getOrDefault(DEFAULT_TIP).max(MIN_TIP).min(MAX_TIP)
         val maxFee = baseFee * BigInteger.TWO + tip
         val tx = Eip1559Tx(chainId, nonce, tip, maxFee, gas, to, value, data)
         return Prepared(tx, maxCostWei = gas * maxFee)
@@ -51,7 +59,7 @@ internal class TxSender(private val endpoints: List<EthRpc>, private val chainId
             }
             delay(RECEIPT_POLL_MS)
         }
-        throw RpcError("Not mined yet after ${RECEIPT_POLLS * RECEIPT_POLL_MS / 1000}s ($txHash). It may still go through.")
+        throw NotMinedYet(txHash)
     }
 
     private companion object {
@@ -59,6 +67,7 @@ internal class TxSender(private val endpoints: List<EthRpc>, private val chainId
         val GAS_MARGIN_DEN: BigInteger = BigInteger.valueOf(100)
         val DEFAULT_TIP: BigInteger = BigInteger.valueOf(1_000_000_000)
         val MIN_TIP: BigInteger = BigInteger.valueOf(1_000_000)
+        val MAX_TIP: BigInteger = BigInteger.valueOf(5_000_000_000) // 5 gwei
         const val RECEIPT_POLLS = 60
         const val RECEIPT_POLL_MS = 3_000L
     }

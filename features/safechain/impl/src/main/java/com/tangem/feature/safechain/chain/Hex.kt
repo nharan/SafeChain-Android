@@ -19,7 +19,7 @@ internal object Hex {
 
     fun decode(hex: String): ByteArray {
         val s = hex.removePrefix("0x").removePrefix("0X").let { if (it.length % 2 == 1) "0$it" else it }
-        require(s.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }) { "not hex: $hex" }
+        require(s.all(::isHexDigit)) { "not hex: $hex" }
         return ByteArray(s.length / 2) { i -> s.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
     }
 
@@ -33,13 +33,30 @@ internal object Hex {
 
 internal fun ByteArray.keccak(): ByteArray = toKeccak()
 
+/** ASCII hex only: Kotlin's isDigit() also accepts other scripts' digits (fullwidth, Arabic-Indic…). */
+internal fun isHexDigit(c: Char) = c in '0'..'9' || c in 'a'..'f' || c in 'A'..'F'
+
 /** EIP-55 checksummed form of a 20-byte address. */
 internal fun checksumAddress(address: String): String {
     val lower = address.removePrefix("0x").lowercase()
-    require(lower.length == 40 && lower.all { it.isDigit() || it in 'a'..'f' }) { "not an address: $address" }
+    require(lower.length == 40 && lower.all(::isHexDigit)) { "not an address: $address" }
     val hash = Hex.encode(lower.toByteArray().keccak(), prefix = false)
     return "0x" + lower.mapIndexed { i, c -> if (c.isLetter() && hash[i].digitToInt(16) >= 8) c.uppercaseChar() else c }
         .joinToString("")
+}
+
+/**
+ * An address someone typed, pasted or scanned. All-lowercase or all-uppercase is accepted as is; mixed case
+ * must be a correct EIP-55 checksum, which catches a mistyped character instead of silently fixing it.
+ */
+internal fun parseUserAddress(input: String): String? {
+    val s = input.trim()
+    if (!s.startsWith("0x") || s.length != 42) return null
+    val body = s.substring(2)
+    if (!body.all(::isHexDigit)) return null
+    val checked = checksumAddress(s)
+    val mixed = body.any { it in 'a'..'f' } && body.any { it in 'A'..'F' }
+    return if (!mixed || checked == s) checked else null
 }
 
 /** Address of an uncompressed secp256k1 public key (65 bytes, 0x04 prefix). */

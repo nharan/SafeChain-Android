@@ -19,7 +19,8 @@ internal object SoftKey {
     fun generate(): ByteArray {
         ensureCrypto()
         while (true) {
-            val candidate = CryptoUtils.generateRandomBytes(PRIVATE_KEY_BYTES)
+            // The platform's CSPRNG directly, rather than a library helper whose source isn't in this repo.
+            val candidate = ByteArray(PRIVATE_KEY_BYTES).also { java.security.SecureRandom().nextBytes(it) }
             if (CryptoUtils.isPrivateKeyValid(candidate, EllipticCurve.Secp256k1)) return candidate
         }
     }

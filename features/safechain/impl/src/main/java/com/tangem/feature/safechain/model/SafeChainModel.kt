@@ -23,7 +23,11 @@ import com.tangem.feature.safechain.chain.SafeChainCalls
 import com.tangem.feature.safechain.chain.SepoliaConfig
 import com.tangem.feature.safechain.chain.Token
 import com.tangem.feature.safechain.chain.TxSender
+import com.tangem.feature.safechain.chain.NotMinedYet
+import com.tangem.feature.safechain.chain.ScannedAddress
 import com.tangem.feature.safechain.chain.lookAlike
+import com.tangem.feature.safechain.chain.parseUserAddress
+import com.tangem.feature.safechain.chain.scannedAddress
 import com.tangem.feature.safechain.chain.of
 import com.tangem.feature.safechain.chain.VaultReader
 import com.tangem.feature.safechain.chain.VaultView
@@ -131,6 +135,9 @@ internal class SafeChainModel @Inject constructor(
 
     /** Readings in a row where one data source failed; one blip (a rate limit) isn't worth a banner. */
     private var degradedReads = 0
+
+    /** Whether any reading this session was cross-checked. Until one is, a single-source reading is flagged at once. */
+    private var agreedOnce = false
     private var salt: ByteArray? = null
     private var busy = false
 
@@ -140,10 +147,24 @@ internal class SafeChainModel @Inject constructor(
      */
     private var demo: DemoChain? = null
 
+    // Declared before init {}: its first read uses them, and properties initialise in declaration order.
+    /** On-phone memory: vaults confirmed as the user's own, and addresses this app has paid (per card). */
+    private val prefs by lazy { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
+    private val demoTrusted = mutableSetOf<String>()
+    private val demoRecipients = mutableSetOf<String>()
+
     /** The prepared transactions behind the Review sheet, and what comes after they're mined. */
     private var pending: Pending? = null
 
-    private data class Pending(val txs: List<TxSender.Prepared>, val by: By, val from: String, val doneTitle: String, val then: (suspend () -> Unit)?)
+    /** [recipient]: an outside address being paid, remembered once sent (for the look-alike check). */
+    private data class Pending(
+        val txs: List<TxSender.Prepared>,
+        val by: By,
+        val from: String,
+        val doneTitle: String,
+        val then: (suspend () -> Unit)?,
+        val recipient: String? = null,
+    )
 
     val state: StateFlow<SafeChainUM>
         field = MutableStateFlow(SafeChainUM())
@@ -186,6 +207,8 @@ internal class SafeChainModel @Inject constructor(
             snapshot = d.snapshot(acct.address)
             snapshotBlock = d.head
             health = RpcHealth.Agree
+            agreedOnce = true
+            rememberTrusted(ownVaults(snapshot).map { it.address })
             snapshotReadAtMs = System.currentTimeMillis()
             phoneKeyWei = d.ethBalance(DemoChain.PHONE)
             state.update { it.copy(loading = false, loadError = null) }
@@ -198,6 +221,11 @@ internal class SafeChainModel @Inject constructor(
             snapshotBlock = checked.block.number
             health = checked.health
             degradedReads = if (checked.health is RpcHealth.Degraded) degradedReads + 1 else 0
+            if (checked.health is RpcHealth.Agree) {
+                agreedOnce = true
+                // Remembered only when both endpoints agree: a single lying endpoint can't plant a "vault".
+                rememberTrusted(ownVaults(checked.value).map { it.address })
+            }
             snapshotReadAtMs = System.currentTimeMillis()
             phoneKey?.let { key ->
                 phoneKeyWei = endpoints.firstNotNullOfOrNull { runCatching { it.balance(key, checked.block.number) }.getOrNull() } ?: phoneKeyWei
@@ -216,10 +244,57 @@ internal class SafeChainModel @Inject constructor(
         return s.chainTime + (System.currentTimeMillis() - snapshotReadAtMs) / 1000
     }
 
-    /** The vault the screen is about: the newest one this card spends from. */
+    /**
+     * The vaults that are the user's own: created by this card (the factory's VaultCreated names it as primary,
+     * which only the card itself can cause) and reported so by every endpoint. A vault that reached the card
+     * through a key rotation never qualifies: replacePrimary needs no consent from the new key, so anyone can
+     * hand the card a vault they control (security review 2026-10-24, Critical).
+     */
+    private fun ownVaults(s: AccountSnapshot? = snapshot): List<VaultView> = s?.vaults.orEmpty().filter { it.createdByMe && !it.disputed }
+
+    /**
+     * The vault the screen is about: the newest own vault this phone has seen confirmed by agreeing endpoints
+     * (remembered on the phone). Before any is remembered (first run), the newest own vault.
+     */
     private fun current(s: AccountSnapshot? = snapshot): VaultView? {
-        val me = account?.address ?: return null
-        return s?.vaults?.lastOrNull { it.primary.equals(me, ignoreCase = true) } ?: s?.vaults?.lastOrNull()
+        val own = ownVaults(s)
+        val trusted = trustedVaults()
+        return own.lastOrNull { it.address.lowercase() in trusted } ?: own.lastOrNull().takeIf { trusted.isEmpty() }
+    }
+
+    private fun prefsKey(kind: String) = "$kind.${account?.address?.lowercase()}"
+
+    /** Own vaults confirmed by agreeing endpoints: the only ones money is moved into. */
+    private fun trustedVaults(): Set<String> = if (demo != null) demoTrusted else prefs.getStringSet(prefsKey("trusted"), emptySet()).orEmpty()
+
+    private fun rememberTrusted(addresses: Collection<String>) {
+        val merged = trustedVaults() + addresses.map { it.lowercase() }
+        if (demo != null) demoTrusted += merged else prefs.edit().putStringSet(prefsKey("trusted"), merged).apply()
+    }
+
+    /** Addresses this app has signed payments to: what the look-alike check compares against. */
+    private fun recipients(): Set<String> = if (demo != null) demoRecipients else prefs.getStringSet(prefsKey("paid"), emptySet()).orEmpty()
+
+    private fun rememberRecipient(address: String) {
+        val merged = recipients() + address.lowercase()
+        if (demo != null) demoRecipients += merged else prefs.edit().putStringSet(prefsKey("paid"), merged).apply()
+    }
+
+    /** A deposit into Savings goes only to a vault confirmed by agreeing endpoints. */
+    private fun depositTarget(): VaultView? = current()?.takeIf { it.address.lowercase() in trustedVaults() }
+
+    /** Moving money while the endpoints disagree could follow a lying endpoint's story; protective actions stay. */
+    private fun blockedByDisagreement(): Boolean {
+        if (health !is RpcHealth.Disagree) return false
+        sheet(
+            SheetUM.Result(
+                ok = false,
+                title = "Not now",
+                text = "Your two Sepolia data sources disagree, so this can't be checked. Cancelling and locking still work. Try again in a moment, or check safechain.rep.run.",
+                url = null,
+            ),
+        )
+        return true
     }
 
     private fun render() {
@@ -253,12 +328,13 @@ internal class SafeChainModel @Inject constructor(
                 health = when (val h = health) {
                     RpcHealth.Agree, null -> HealthUM.Agree
                     // Disagreement always shows at once; a source that's down shows once it stays down.
+                    // Until something was cross-checked this session, it shows at once.
                     is RpcHealth.Degraded ->
-                        if (degradedReads >= DEGRADED_READS_TO_WARN) HealthUM.Degraded(h.problems.joinToString(" · ")) else HealthUM.Agree
+                        if (degradedReads >= DEGRADED_READS_TO_WARN || !agreedOnce) HealthUM.Degraded(h.problems.joinToString(" · ")) else HealthUM.Agree
                     is RpcHealth.Disagree -> HealthUM.Disagree(h.detail)
                 },
-                vault = vaultUM,
-                previous = s.vaults
+                vault = vaultUM?.let { v -> v.copy(alerts = v.alerts + foreignVaultAlerts(s, me) + hiddenWithdrawalAlert(cur)) },
+                previous = ownVaults(s)
                     .filter { it !== cur && it.primary.equals(me, ignoreCase = true) }
                     .filter { it.holdsAnything || it.withdrawals.any { w -> w.state in 1..2 } }
                     .map { v ->
@@ -271,6 +347,46 @@ internal class SafeChainModel @Inject constructor(
                         )
                     },
             )
+        }
+    }
+
+    /** A destination that is one of SafeChain's own contracts: tokens sent there are lost for good. */
+    private fun contractDestination(to: String): String? {
+        val t = to.lowercase()
+        return when {
+            SepoliaConfig.token(to) != null -> "That's the ${SepoliaConfig.token(to)!!.symbol} token contract, not a person's address. Tokens sent there are lost."
+            t == SepoliaConfig.ESCROW.lowercase() || t == SepoliaConfig.FACTORY.lowercase() -> "That's a SafeChain contract, not a person's address."
+            snapshot?.vaults.orEmpty().any { it.address.equals(to, ignoreCase = true) } -> "That's a Savings vault address. Use Move to put money in Savings."
+            t == ZERO_ADDRESS -> "That's the zero address: anything sent there is gone."
+            else -> null
+        }
+    }
+
+    /** Vaults this card didn't open but which name it as spending key: shown, never used. */
+    private fun foreignVaultAlerts(s: AccountSnapshot, me: String): List<String> = s.vaults
+        .filter { !it.createdByMe && it.primary.equals(me, ignoreCase = true) }
+        .map {
+            "A Savings you didn't open (${short(it.address)}) names this card as its spending key. Anyone can do that. " +
+                "This app ignores it: never move money into it, and don't trust messages about it."
+        }
+
+    /**
+     * Money reserved in Savings that no listed withdrawal accounts for: a pending withdrawal this app can't show
+     * (for example buried under many others). The contract's own numbers say it's there.
+     */
+    private fun hiddenWithdrawalAlert(v: VaultView?): List<String> {
+        v ?: return emptyList()
+        val hidden = SepoliaConfig.TOKENS.any { t ->
+            val reserved = (v.balances.of(t.address) - v.available.of(t.address)).max(BigInteger.ZERO)
+            val shown = v.withdrawals
+                .filter { it.token.equals(t.address, ignoreCase = true) && (it.state in 1..2 || it.voided) }
+                .fold(BigInteger.ZERO) { a, w -> a + w.amount }
+            reserved > shown
+        }
+        return if (hidden) {
+            listOf("Savings has money held for a withdrawal this app can't list. If you didn't ask for it, lock Savings now.")
+        } else {
+            emptyList()
         }
     }
 
@@ -456,7 +572,9 @@ internal class SafeChainModel @Inject constructor(
         val url = when {
             withdrawalId != null && kind in ESCROW_KINDS -> "${SepoliaConfig.EXPLORER}/payment/$withdrawalId"
             withdrawalId != null && vault.isNotEmpty() -> SepoliaConfig.explorerWithdrawal(vault, withdrawalId.toString())
-            else -> SepoliaConfig.EXPLORER_TX + txHash
+            // The hash comes from an endpoint: only a real one goes into a link.
+            TX_HASH.matches(txHash) -> SepoliaConfig.EXPLORER_TX + txHash
+            else -> SepoliaConfig.EXPLORER
         }
         return ActivityUM(row.title, row.detail.trim(), ago(ago), row.amount, url, row.icon, row.tone, if (vault.isEmpty()) Source.Checking else Source.Savings)
     }
@@ -474,6 +592,7 @@ internal class SafeChainModel @Inject constructor(
         step: String? = null,
         note: String? = null,
         danger: Boolean = false,
+        recipient: String? = null,
         then: (suspend () -> Unit)? = null,
     ) {
         val acct = account ?: return
@@ -502,7 +621,7 @@ internal class SafeChainModel @Inject constructor(
                     )
                     return@launch
                 }
-                pending = Pending(prepared, by, from, doneTitle, then)
+                pending = Pending(prepared, by, from, doneTitle, then, recipient)
                 sheet(
                     SheetUM.Review(
                         title = title,
@@ -537,6 +656,7 @@ internal class SafeChainModel @Inject constructor(
                     sheet(SheetUM.Working(title, if (p.by == By.Card) "Demo: no card needed." else "Demo: no fingerprint needed.", holdCard = p.by == By.Card))
                     delay(DEMO_STEP_MS)
                     p.txs.forEach { d.apply(p.from, it.tx.to, it.tx.data, it.tx.value) }
+                    p.recipient?.let(::rememberRecipient)
                     refresh()
                     if (p.then != null) p.then.invoke() else sheet(SheetUM.Result(ok = true, title = p.doneTitle, text = "Demo: nothing was sent.", url = null))
                     return@launch
@@ -558,6 +678,7 @@ internal class SafeChainModel @Inject constructor(
                     sheet(SheetUM.Working(title, "Signed. Sending to Sepolia and waiting for it to be included…$progress", holdCard = false))
                     lastHash = sender.broadcastAndWait(prepared.tx.signed(rsv.yParity, rsv.r, rsv.s), expectedFrom = p.from)
                 }
+                p.recipient?.let(::rememberRecipient)
                 refresh()
                 if (p.then != null) {
                     p.then.invoke()
@@ -570,6 +691,18 @@ internal class SafeChainModel @Inject constructor(
                 sheet(SheetUM.None)
             } catch (e: PhoneKeyError.Cancelled) {
                 sheet(SheetUM.None)
+            } catch (e: NotMinedYet) {
+                // It was sent: saying "not done" would invite a second, duplicate payment.
+                p.recipient?.let(::rememberRecipient)
+                sheet(
+                    SheetUM.Result(
+                        ok = true,
+                        title = "Sent, not confirmed yet",
+                        text = "It's on its way but Sepolia hasn't included it yet. Don't send it again: check it on the explorer, it may go through in a few minutes.",
+                        url = SepoliaConfig.EXPLORER_TX + e.txHash,
+                    ),
+                )
+                refresh()
             } catch (e: Exception) {
                 sheet(SheetUM.Result(ok = false, title = "Not done", text = reason(e), url = null))
                 refresh()
@@ -691,7 +824,8 @@ internal class SafeChainModel @Inject constructor(
         val currentSalt = salt ?: return setupError("Make the consent link first.")
         val sig = parseSignature(s.signature)
             ?: return setupError("Paste the backup wallet's signature from the consent page: 0x followed by 130 characters.")
-        val hours = s.delayHours.toLong()
+        val hours = s.delayHours.toLongOrNull()?.takeIf { it in MIN_HOURS..MAX_HOURS }
+            ?: return setupError("Protection period: 24 to 720 hours.")
         setupError(null)
         review(
             title = "Create Protected Savings",
@@ -792,7 +926,8 @@ internal class SafeChainModel @Inject constructor(
 
     override fun onOpenReceive() {
         val me = account?.address ?: return
-        sheet(SheetUM.Receive(checking = me, savings = current()?.address, into = state.value.page ?: Source.Checking))
+        // Savings' address is offered only once agreeing endpoints have confirmed it (see depositTarget).
+        sheet(SheetUM.Receive(checking = me, savings = depositTarget()?.address, into = state.value.page ?: Source.Checking))
     }
 
     override fun onReceiveInto(source: Source) = state.update {
@@ -800,10 +935,14 @@ internal class SafeChainModel @Inject constructor(
     }
 
     override fun onAmountChange(value: String) = state.update {
+        // A comma is the decimal point (European keyboards type "1,5"): never a thousands separator, which
+        // used to turn "1,5" into 15 (security review 2026-10-24). One decimal point at most.
+        val clean = value.replace(',', '.').filter { c -> c.isDigit() && c in '0'..'9' || c == '.' }
+        val amount = clean.substringBefore('.') + if ('.' in clean) "." + clean.substringAfter('.').replace(".", "") else ""
         when (val sh = it.sheet) {
-            is SheetUM.AddFunds -> it.copy(sheet = sh.copy(amount = value, error = null))
-            is SheetUM.Withdraw -> it.copy(sheet = sh.copy(amount = value, error = null))
-            is SheetUM.Send -> it.copy(sheet = sh.copy(amount = value, error = null))
+            is SheetUM.AddFunds -> it.copy(sheet = sh.copy(amount = amount, error = null))
+            is SheetUM.Withdraw -> it.copy(sheet = sh.copy(amount = amount, error = null))
+            is SheetUM.Send -> it.copy(sheet = sh.copy(amount = amount, error = null))
             else -> it
         }
     }
@@ -817,15 +956,17 @@ internal class SafeChainModel @Inject constructor(
     }
 
     override fun onMax() = state.update {
+        // The field takes plain numbers: no grouping commas ("17,700" → "17700").
         when (val sh = it.sheet) {
-            is SheetUM.AddFunds -> it.copy(sheet = sh.copy(amount = sh.max, error = null))
-            is SheetUM.Withdraw -> it.copy(sheet = sh.copy(amount = sh.max, error = null))
-            is SheetUM.Send -> it.copy(sheet = sh.copy(amount = sh.max, error = null))
+            is SheetUM.AddFunds -> it.copy(sheet = sh.copy(amount = sh.max.replace(",", ""), error = null))
+            is SheetUM.Withdraw -> it.copy(sheet = sh.copy(amount = sh.max.replace(",", ""), error = null))
+            is SheetUM.Send -> it.copy(sheet = sh.copy(amount = sh.max.replace(",", ""), error = null))
             else -> it
         }
     }
 
     override fun onContinue() {
+        if (blockedByDisagreement()) return
         (state.value.sheet as? SheetUM.Send)?.let { return send(it) }
         val v = current() ?: return
         when (val sh = state.value.sheet) {
@@ -834,6 +975,9 @@ internal class SafeChainModel @Inject constructor(
                 val amount = parseAmount(sh.amount, t.decimals) ?: return sheet(sh.copy(error = "Enter an amount, for example 100."))
                 if (amount > (snapshot?.tokenBalances?.of(t.address) ?: BigInteger.ZERO)) {
                     return sheet(sh.copy(error = "Checking has ${sh.max} ${t.symbol}."))
+                }
+                if (depositTarget()?.address != v.address) {
+                    return sheet(sh.copy(error = "Waiting for both data sources to confirm your Savings address. Try again in a moment."))
                 }
                 review(
                     title = "Move ${money(amount, t)} to Savings",
@@ -853,6 +997,7 @@ internal class SafeChainModel @Inject constructor(
                     parseAddress(sh.to) ?: return sheet(sh.copy(error = "Paste the destination's full address (0x…)."))
                 }
                 if (to.equals(v.address, ignoreCase = true)) return sheet(sh.copy(error = "That's your Savings itself."))
+                if (!sh.toChecking) contractDestination(to)?.let { return sheet(sh.copy(error = it)) }
                 val hold = holdText(v.delaySeconds)
                 val poison = if (sh.toChecking) null else lookAlikeWarning(to)
                 review(
@@ -866,6 +1011,7 @@ internal class SafeChainModel @Inject constructor(
                     calls = listOf(Call(v.address, SafeChainCalls.requestWithdrawal(t.address, amount, to))),
                     doneTitle = "Moving · arrives in $hold",
                     danger = poison != null,
+                    recipient = if (sh.toChecking) null else to,
                 )
             }
             else -> Unit
@@ -879,7 +1025,8 @@ internal class SafeChainModel @Inject constructor(
         val me = account?.address ?: return
         val t = coin(sh.token)
         val amount = parseAmount(sh.amount, t.decimals) ?: return sheet(sh.copy(error = "Enter an amount, for example 100."))
-        val to = parseAddress(sh.to) ?: return sheet(sh.copy(error = "Paste the destination's full address (0x…)."))
+        val to = parseAddress(sh.to) ?: return sheet(sh.copy(error = "Paste the destination's full address (0x…). A mixed-case address must have the right capitals."))
+        contractDestination(to)?.let { return sheet(sh.copy(error = it)) }
         val what = money(amount, t)
         val check = "Check every character of the address. You can also check it from another device at safechain.rep.run."
         // Address poisoning: a different address that starts and ends like one this card paid before.
@@ -902,6 +1049,7 @@ internal class SafeChainModel @Inject constructor(
                 calls = listOf(Call(v.address, SafeChainCalls.requestWithdrawal(t.address, amount, to))),
                 doneTitle = "Sending · arrives in $hold",
                 danger = poison != null,
+                recipient = to,
             ) {
                 val w = current()?.withdrawals?.firstOrNull { it.to.equals(to, ignoreCase = true) && it.amount == amount && it.state == 1 }
                 sent("Sending · arrives in $hold", what, w?.deadline ?: (chainNow() + v.delaySeconds), w?.let { SepoliaConfig.explorerWithdrawal(v.address, it.id.toString()) })
@@ -919,6 +1067,7 @@ internal class SafeChainModel @Inject constructor(
                 calls = listOf(Call(to, ByteArray(0), amount)),
                 doneTitle = "Sent",
                 danger = poison != null,
+                recipient = to,
             )
         }
         val seconds = if (sh.hold == HOLD_CUSTOM) {
@@ -939,6 +1088,7 @@ internal class SafeChainModel @Inject constructor(
                 calls = listOf(Call(t.address, SafeChainCalls.transfer(to, amount))),
                 doneTitle = "Sent",
                 danger = poison != null,
+                recipient = to,
             )
         }
 
@@ -958,6 +1108,7 @@ internal class SafeChainModel @Inject constructor(
                 calls = listOf(Call(SepoliaConfig.ESCROW, SafeChainCalls.createPayment(t.address, to, amount, seconds))),
                 doneTitle = "Sending · arrives in $hold",
                 danger = poison != null,
+                recipient = to,
             ) {
                 val p = snapshot?.payments?.firstOrNull { it.recipient.equals(to, ignoreCase = true) && it.amount == amount && it.state == 1 }
                 sent("Sending · arrives in $hold", what, p?.deadline ?: (chainNow() + seconds), p?.let { "${SepoliaConfig.EXPLORER}/payment/${it.id}" })
@@ -971,6 +1122,7 @@ internal class SafeChainModel @Inject constructor(
             step = "Step 1 of 2 · once for ${t.symbol}",
             rows = listOf(
                 "Allows" to "SafeChain's payment escrow to hold the ${t.symbol} you send from Checking with a hold, until it's delivered or you cancel",
+                "Amount" to "Unlimited. The escrow only takes what you send in a payment you sign; nobody else can use this.",
                 "Escrow" to groupedAddress(SepoliaConfig.ESCROW),
             ),
             note = "You won't be asked again for ${t.symbol}.",
@@ -984,11 +1136,15 @@ internal class SafeChainModel @Inject constructor(
      * payments and instant sends.
      */
     private fun paidBefore(): List<String> {
-        val s = snapshot ?: return emptyList()
-        val me = account?.address ?: return emptyList()
-        return s.vaults.flatMap { v -> v.withdrawals.map { it.to } } +
+        // Addresses this app signed payments to are remembered on the phone: on-chain lists can be flushed by
+        // spam, and anyone can plant a zero-value "transfer from you" (security review 2026-10-24).
+        val own = recipients().toList()
+        val s = snapshot ?: return own
+        val me = account?.address ?: return own
+        return own +
+            ownVaults(s).flatMap { v -> v.withdrawals.filter { it.initiator.equals(me, ignoreCase = true) && it.amount.signum() > 0 }.map { it.to } } +
             s.payments.filter { it.sender.equals(me, ignoreCase = true) }.map { it.recipient } +
-            s.checkingActivity.filter { it.kind == ActivityView.Kind.CheckingSent }.mapNotNull { it.address }
+            s.checkingActivity.filter { it.kind == ActivityView.Kind.CheckingSent && (it.amount ?: BigInteger.ZERO).signum() > 0 }.mapNotNull { it.address }
     }
 
     private fun lookAlikeWarning(to: String): String? = lookAlike(to, paidBefore())?.let { known ->
@@ -1268,8 +1424,12 @@ internal class SafeChainModel @Inject constructor(
     // ----------------------------------------------------------------- older vaults
 
     override fun onMoveFromPrevious(vault: String) {
-        val cur = current() ?: return
-        val old = snapshot?.vaults?.firstOrNull { it.address.equals(vault, ignoreCase = true) } ?: return
+        if (blockedByDisagreement()) return
+        // Only between the user's own vaults, into one agreeing endpoints confirmed.
+        val cur = depositTarget() ?: return sheet(
+            SheetUM.Result(ok = false, title = "Not yet", text = "Waiting for both data sources to confirm your Savings address. Try again in a moment.", url = null),
+        )
+        val old = ownVaults().firstOrNull { it.address.equals(vault, ignoreCase = true) } ?: return
         val tokens = SepoliaConfig.TOKENS.filter { old.available.of(it.address).signum() > 0 }
         val hold = holdText(old.delaySeconds)
         review(
@@ -1303,13 +1463,25 @@ internal class SafeChainModel @Inject constructor(
         router.push(AppRoute.QrScanning(source = AppRoute.QrScanning.Source.SafeChain))
     }
 
-    /** Accepts plain values and wallet QR formats such as `ethereum:0x…@11155111`. */
+    /** Plain addresses and EIP-681 payment requests (see [scannedAddress]); anything else is refused, said why. */
     private fun onScanned(raw: String) {
+        fun address(fill: (String) -> Unit, error: (String) -> Unit) = when (val r = scannedAddress(raw)) {
+            is ScannedAddress.Address -> fill(r.address)
+            is ScannedAddress.Rejected -> error(r.reason)
+        }
         when (scanTarget) {
-            ScanTarget.Recovery -> ADDRESS.find(raw)?.value?.let(::onSetupRecoveryChange)
-            ScanTarget.Destination -> ADDRESS.find(raw)?.value?.let(::onDestinationChange)
+            ScanTarget.Recovery -> address(::onSetupRecoveryChange, ::setupError)
+            ScanTarget.Destination -> address(::onDestinationChange) { reason ->
+                state.update {
+                    when (val sh = it.sheet) {
+                        is SheetUM.Send -> it.copy(sheet = sh.copy(error = reason))
+                        is SheetUM.Withdraw -> it.copy(sheet = sh.copy(error = reason))
+                        else -> it
+                    }
+                }
+            }
             ScanTarget.Signature -> SIGNATURE.find(raw)?.value?.let(::onSetupSignatureChange)
-            ScanTarget.OtherWallet -> ADDRESS.find(raw)?.value?.let(::onOtherWalletAddressChange)
+            ScanTarget.OtherWallet -> address(::onOtherWalletAddressChange) { reason -> updateOther { o -> o.copy(error = reason) } }
             ScanTarget.OtherSignature -> SIGNATURE.find(raw)?.value?.let(::onOtherWalletSignatureChange)
             null -> Unit
         }
@@ -1365,6 +1537,8 @@ internal class SafeChainModel @Inject constructor(
         val PHONE_GAS_LOW: BigInteger = BigInteger.TEN.pow(15) // 0.001 ETH
 
         val ADDRESS = Regex("0x[0-9a-fA-F]{40}(?![0-9a-fA-F])")
+        val TX_HASH = Regex("^0x[0-9a-fA-F]{64}$")
+        const val PREFS = "safechain"
         val SIGNATURE = Regex("0x[0-9a-fA-F]{130}(?![0-9a-fA-F])")
         val MAX_UINT: BigInteger = BigInteger.ONE.shiftLeft(256) - BigInteger.ONE
         val UNIT: BigDecimal = BigDecimal.TEN.pow(ETH_DECIMALS)
@@ -1383,7 +1557,9 @@ internal class SafeChainModel @Inject constructor(
         /** Every coin the screens show, in display order: the tokens, then ETH. */
         val COINS: List<Token> = SepoliaConfig.TOKENS + ETH_COIN
 
-        fun coin(key: String): Token = COINS.firstOrNull { it.key == key.lowercase() } ?: SepoliaConfig.TOKENS.last()
+        /** A coin by address or key. An unknown token is labelled as such, never as one of ours. */
+        fun coin(key: String): Token = COINS.firstOrNull { it.key == key.lowercase() }
+            ?: Token(key, "unknown token", "Unknown token ${short(key)}", ETH_DECIMALS, usd = null)
 
         /** A token amount: priced tokens (USDC) with cents unless whole ("250", "12.50"), others like [fmt]. */
         fun fmt(v: BigInteger, t: Token): String {
@@ -1418,7 +1594,7 @@ internal class SafeChainModel @Inject constructor(
             BigDecimal(s.trim().replace(",", "")).movePointRight(decimals).toBigIntegerExact().takeIf { it.signum() > 0 }
         }.getOrNull()
 
-        fun parseAddress(s: String): String? = runCatching { checksumAddress(s.trim()) }.getOrNull()
+        fun parseAddress(s: String): String? = runCatching { parseUserAddress(s) }.getOrNull()
         fun parseSignature(s: String): ByteArray? = runCatching { Hex.decode(s.trim()) }.getOrNull()?.takeIf { it.size == SIG_BYTES }
         fun short(a: String?) = a?.let { "${it.take(6)}…${it.takeLast(4)}" }.orEmpty()
         fun time(ts: Long): String = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(ts * 1000))

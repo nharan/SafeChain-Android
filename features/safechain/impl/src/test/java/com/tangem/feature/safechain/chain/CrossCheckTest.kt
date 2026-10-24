@@ -69,10 +69,14 @@ internal class CrossCheckTest {
     }
 
     @Test
-    fun `GIVEN a stale endpoint WHEN read THEN it is excluded, not used to hold the screen back`() = runTest {
-        val r = CrossCheckedReader(listOf(FakeRpc("https://a", head = 500), FakeRpc("https://b", head = 100)))
-            .read(merge = { it.first() }) { e, b -> "${e.url}@${b.number}" }
-        assertThat(r.value).isEqualTo("https://a@500")
+    fun `GIVEN one endpoint claims a far-higher head WHEN read THEN both are read at the lower block, never one alone`() = runTest {
+        // Security review 2026-10-24: a lying endpoint reporting head+400 used to push the honest one out as
+        // "behind" and get read alone. Now both are compared at the lowest head.
+        val seen = mutableListOf<String>()
+        val r = CrossCheckedReader(listOf(FakeRpc("https://liar", head = 500), FakeRpc("https://honest", head = 100)))
+            .read(merge = { it.first() }) { e, b -> seen += "${e.url}@${b.number}"; "block ${b.number}" }
+        assertThat(seen).containsExactly("https://liar@100", "https://honest@100")
+        assertThat(r.value).isEqualTo("block 100")
         assertThat(r.health).isInstanceOf(RpcHealth.Degraded::class.java)
     }
 
