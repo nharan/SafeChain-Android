@@ -42,7 +42,8 @@ internal class DemoChain(private val now: () -> Long = { System.currentTimeMilli
         var status: Int = PENDING, // PENDING, EXECUTED, CANCELLED
     )
 
-    private class V(val address: String, var primary: String, var recovery: String, val delay: Long) {
+    /** [releaseNow]: opened by the current factory (vaults from the old one lack it). */
+    private class V(val address: String, var primary: String, var recovery: String, val delay: Long, val releaseNow: Boolean = true) {
         val balances = Purse()
         var locked = false
         var epoch = 0
@@ -84,7 +85,7 @@ internal class DemoChain(private val now: () -> Long = { System.currentTimeMilli
         checking += event(ActivityView.Kind.PaymentReceived, id = BigInteger.ONE, token = USDC, amount = usdc(50), address = FRIEND, ago = 2 * HOUR)
         checking += event(ActivityView.Kind.CheckingReceived, token = USDC, amount = usdc(250), address = FRIEND, ago = 5 * HOUR)
         // A previous vault backed by another wallet, still holding money: the "move it here" banner.
-        vaults += V(OLD_VAULT, CARD, OTHER_WALLET, DAY).apply {
+        vaults += V(OLD_VAULT, CARD, OTHER_WALLET, DAY, releaseNow = false).apply {
             balances.add(PWTEST, units(2_000))
             activity += event(ActivityView.Kind.Deposited, token = PWTEST, amount = units(2_000), by = CARD, ago = 3 * DAY)
         }
@@ -220,6 +221,19 @@ internal class DemoChain(private val now: () -> Long = { System.currentTimeMilli
                 v.locked = false
                 v.activity += event(ActivityView.Kind.Unlocked, by = from)
             }
+            sel(SafeChainCalls.releaseNow(BigInteger.ZERO)) -> {
+                if (!v.releaseNow) throw Revert("not available in this vault's version")
+                if (!isRecovery) throw Revert("NotRecovery")
+                val w = withdrawal(v, uintArg(0))
+                if (w.status != PENDING) throw Revert("NotPending")
+                if (v.locked) throw Revert("VaultLocked")
+                if (isVoid(v, w)) throw Revert("WithdrawalIsVoid")
+                if (!w.to.equals(v.primary, ignoreCase = true) || !w.initiator.equals(v.primary, ignoreCase = true)) throw Revert("InvalidDestination")
+                w.status = EXECUTED
+                v.balances.add(w.token, -w.amount)
+                if (w.to.equals(CARD, ignoreCase = true)) card.add(w.token, w.amount)
+                v.activity += event(ActivityView.Kind.WithdrawalExecuted, id = w.id, by = from)
+            }
             sel(SafeChainCalls.releaseVoided(BigInteger.ZERO)) -> {
                 val w = withdrawal(v, uintArg(0))
                 if (w.status != PENDING) throw Revert("NotPending")
@@ -336,6 +350,7 @@ internal class DemoChain(private val now: () -> Long = { System.currentTimeMilli
         activity = v.activity.sortedByDescending { it.block },
         // Every demo vault was opened by the card itself (as the factory requires of a primary).
         createdByMe = true,
+        canReleaseNow = v.releaseNow,
     )
 
     @Suppress("LongParameterList")

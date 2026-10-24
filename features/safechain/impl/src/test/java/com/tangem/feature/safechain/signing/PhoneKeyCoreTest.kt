@@ -30,7 +30,8 @@ internal class PhoneKeyCoreTest {
     @Test
     fun `GIVEN a create config WHEN hashing the recovery consent THEN it equals the factory's own digest`() {
         val digest = Eip712.recoveryConsentDigest(card, ones, 86_400, ZERO_ADDRESS, ByteArray(32) { 0xab.toByte() })
-        assertThat(hex(digest)).isEqualTo("0x709180bf35e1f626eed45155a8b1c90ec296dd757801deff02c43137e823649d")
+        // From the current factory (0xf7a8…4873, deployed 2026-10-24); the domain includes the factory address.
+        assertThat(hex(digest)).isEqualTo("0xf43f1072f439fcf4ab7fefe39f6c07a5abc8838a110885aa4328634126177b30")
     }
 
     @Test

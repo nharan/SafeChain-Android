@@ -464,6 +464,8 @@ internal class SafeChainModel @Inject constructor(
                 )
             },
             disputed = disputed,
+            // An older vault (no releaseNow) that this phone backs: offer the new version.
+            upgradeAvailable = !canReleaseNow && backupIsThisPhone && primary.equals(me, ignoreCase = true) && !locked,
         )
     }
 
@@ -482,9 +484,23 @@ internal class SafeChainModel @Inject constructor(
             // The contract decides; these only choose which buttons to offer.
             canCancel = state == 1 && (!toHaven || initiator.equals(me, ignoreCase = true)),
             canRelease = state == 2,
+            canReleaseNow = canReleaseNow(s, vault, me),
             disputed = disputed,
             url = SepoliaConfig.explorerWithdrawal(vault, id.toString()),
         )
+    }
+
+    /**
+     * Whether this phone can release it now with its backup key (the contract's releaseNow): a live withdrawal
+     * the card asked for to its own address, from a current-factory vault backed by this phone, outside any
+     * lock, key replacement or veto window. The contract checks all of it again.
+     */
+    private fun WithdrawalView.canReleaseNow(s: AccountSnapshot, vault: String, me: String): Boolean {
+        val v = s.vaults.firstOrNull { it.address.equals(vault, ignoreCase = true) } ?: return false
+        return state in 1..2 && !voided && !toHaven && v.canReleaseNow && !v.locked &&
+            v.primary.equals(me, ignoreCase = true) && to.equals(v.primary, ignoreCase = true) && initiator.equals(v.primary, ignoreCase = true) &&
+            phoneKey?.equals(v.recovery, ignoreCase = true) == true &&
+            v.pendingPrimary == ZERO_ADDRESS && v.vetoUntil <= chainNow()
     }
 
     /** A protected payment from (or to) Checking, through the escrow. */
@@ -776,7 +792,7 @@ internal class SafeChainModel @Inject constructor(
                 ) {
                     state.update { it.copy(setup = SetupUM()) }
                     val text = if (isMove || (snapshot?.vaults?.size ?: 0) > 1) {
-                        "Next, move your money from your previous Savings: it's at the top of the screen."
+                        "Next, move your money over: tap Move on \"Old Savings\" under your accounts. It waits out the old hold once."
                     } else {
                         "Your card spends. This phone can stop every payment if your card is ever lost."
                     }
@@ -1219,6 +1235,33 @@ internal class SafeChainModel @Inject constructor(
                 ),
             )
         }
+    }
+
+    /** Open a new Savings (current factory, this phone as backup, same hold); the old one moves over after. */
+    override fun onUpgradeSavings() {
+        if (blockedByDisagreement()) return
+        val v = current() ?: return
+        createWithPhoneBackup(maxOf(v.delaySeconds / HOUR, MIN_HOURS), isMove = true)
+    }
+
+    /** Both keys, no wait: this phone's backup key releases a move to the card's own Checking now. */
+    override fun onReleaseNow(id: String) {
+        val s = snapshot ?: return
+        val me = account?.address ?: return
+        val v = current() ?: return
+        val w = v.withdrawals.firstOrNull { it.id.toString() == id }?.takeIf { it.canReleaseNow(s, v.address, me) } ?: return
+        val amount = money(w.amount, coin(w.token))
+        review(
+            title = "Release $amount now",
+            rows = listOf(
+                "To" to "Your Checking (this card)\n${groupedAddress(w.to)}",
+                "Instead of" to "Waiting until ${time(w.deadline)}",
+                "Why it's safe" to "Your card asked for it and this phone agrees: both keys. It can only go to your own card.",
+            ),
+            calls = listOf(Call(v.address, SafeChainCalls.releaseNow(w.id))),
+            doneTitle = "$amount is in Checking",
+            by = By.Phone,
+        )
     }
 
     override fun onReleaseWithdrawal(id: String) {

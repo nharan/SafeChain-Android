@@ -103,6 +103,8 @@ internal data class VaultUM(
     val activity: List<ActivityUM>,
     val backupChange: BackupChangeUM?,
     val disputed: Boolean,
+    /** An older Savings without "release now": offer to open the new version. */
+    val upgradeAvailable: Boolean = false,
 )
 
 /** A backup-key change in progress (two-party, then a waiting period). */
@@ -147,6 +149,8 @@ internal data class WithdrawalUM(
     val deadline: String,
     val canCancel: Boolean,
     val canRelease: Boolean,
+    /** This phone can release it now with its backup key (a move to the card's own Checking). */
+    val canReleaseNow: Boolean = false,
     val disputed: Boolean,
     /** Its page on the SafeChain explorer. */
     val url: String,
@@ -321,6 +325,8 @@ internal interface SafeChainActions {
     fun onContinue()
     fun onCancelWithdrawal(id: String)
     fun onReleaseWithdrawal(id: String)
+    fun onReleaseNow(id: String)
+    fun onUpgradeSavings()
 
     // emergencies (the phone's backup key) and the card's own lock
     fun onTopUpPhone()

@@ -90,6 +90,9 @@ internal object SafeChainCalls {
     fun unlock() = Abi.call("unlock()")
     /** Frees the reservation of a payment a lock stopped, so the money is spendable again. Anyone may call it. */
     fun releaseVoided(id: BigInteger) = Abi.call("releaseVoided(uint256)", uint(id))
+
+    /** Recovery key only: pay a pending withdrawal to the primary's own address now (vaults from the current factory). */
+    fun releaseNow(id: BigInteger) = Abi.call("releaseNow(uint256)", uint(id))
     fun proposeRecoveryChange(newRecovery: String, consent: ByteArray) =
         Abi.call("proposeRecoveryChange(address,bytes)", addr(newRecovery), Abi.Arg.DynBytes(consent))
     fun approvePolicyChange(nonce: BigInteger) = Abi.call("approvePolicyChange(uint256)", uint(nonce))

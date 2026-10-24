@@ -138,6 +138,7 @@ private fun LazyListScope.home(state: SafeChainUM, v: VaultUM, actions: SafeChai
     item { TotalHeader(state, v, actions) }
     item { QuickActions(v, actions) }
     item { AccountsCard(state, v, actions) }
+    if (v.upgradeAvailable) item { UpgradeCard(actions) }
     v.alerts.forEach { a -> item(key = a) { Alert(a) } }
     v.backupChange?.let { b -> item { BackupChange(b, actions) } }
     if (state.upcoming.isNotEmpty()) {
@@ -419,6 +420,23 @@ private fun AccountsCard(state: SafeChainUM, v: VaultUM, actions: SafeChainActio
     }
 }
 
+/** Offered while Savings is an older version without "release now". */
+@Composable
+private fun UpgradeCard(actions: SafeChainActions) = Card {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Badge(R.drawable.ic_fingerprint_24, Green, GreenBg)
+        Column(Modifier.weight(1f)) {
+            Text("New: release now with both keys", style = TangemTheme.typography.subtitle1, color = TangemTheme.colors.text.primary1)
+            Text(
+                "Move money from Savings to Checking without the wait: your card asks, your fingerprint agrees. Payments to anyone else still wait.",
+                style = TangemTheme.typography.caption2,
+                color = TangemTheme.colors.text.tertiary,
+            )
+        }
+    }
+    SecondaryButton(text = "Upgrade Savings", onClick = actions::onUpgradeSavings, modifier = Modifier.fillMaxWidth())
+}
+
 /** An older Savings that still holds money: one row, with a small Move (its hold applies on the way out). */
 @Composable
 private fun PreviousRow(p: PreviousVaultUM, actions: SafeChainActions) = Row(
@@ -667,6 +685,8 @@ private fun Upcoming(items: List<WithdrawalUM>, actions: SafeChainActions, showS
             Box(Modifier.weight(1f)) {
                 if (!w.isFinal) Progress(w.progress, if (w.incoming) Green else Amber, if (w.incoming) GreenBg else AmberBg)
             }
+            // A move to your own Checking: both keys can bring it in now.
+            if (w.canReleaseNow) CompactButton("Release now", Green, GreenBg) { actions.onReleaseNow(w.id) }
             when {
                 w.canCancel -> CompactButton("Cancel", Red, RedBg) {
                     if (w.source == Source.Checking) actions.onCancelPayment(w.id) else actions.onCancelWithdrawal(w.id)

@@ -44,7 +44,14 @@ internal object SepoliaConfig {
 
     fun token(address: String): Token? = TOKENS.firstOrNull { it.address.equals(address, ignoreCase = true) }
 
-    const val FACTORY = "0x1f153E74c6Aa3cc1FFB775f8166C028654625665"
+    /** Redeployed 2026-10-24: its vaults have releaseNow ("release now with both keys"). New Savings open here. */
+    const val FACTORY = "0xf7a83cbd1f0C5DA59987bd6cCAF4830E766f4873"
+
+    /** Earlier factories, oldest first. Their vaults keep working under their own rules and are still found. */
+    val PREVIOUS_FACTORIES = listOf("0x1f153E74c6Aa3cc1FFB775f8166C028654625665")
+
+    /** Every factory, oldest first, so vaults come out in the order they were opened. */
+    val FACTORIES = PREVIOUS_FACTORIES + FACTORY
     /** Redeployed 2026-10-23 with a 5-minute shortest hold (was 0x0c57772f…7913, 1 hour). */
     const val ESCROW = "0x8F727931aB9a297EbfB90280060c3a54f1C979f2"
     const val START_BLOCK = 11_979_489L

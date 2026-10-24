@@ -59,6 +59,8 @@ internal data class VaultView(
      * rotation can be anyone's: replacePrimary needs no consent from the new key.
      */
     val createdByMe: Boolean = false,
+    /** Opened by the current factory, whose vaults have releaseNow (both keys, to the primary, no wait). */
+    val canReleaseNow: Boolean = false,
 ) {
     val holdsAnything: Boolean get() = balances.values.any { it.signum() > 0 }
 }
@@ -150,6 +152,7 @@ internal data class AccountSnapshot(
                 disputed = !reportedByAll || versions.toSet().size > 1,
                 // Trusted as the user's own only if every endpoint says so.
                 createdByMe = reportedByAll && versions.all { it.createdByMe },
+                canReleaseNow = versions.all { it.canReleaseNow },
             )
         }
     }
@@ -158,13 +161,16 @@ internal data class AccountSnapshot(
 /** Reads one account's SafeChain state from one endpoint at one block. */
 internal class VaultReader(
     private val tokens: List<String> = SepoliaConfig.TOKENS.map { it.address },
-    private val factory: String = SepoliaConfig.FACTORY,
+    private val factories: List<String> = SepoliaConfig.FACTORIES,
     private val escrow: String = SepoliaConfig.ESCROW,
 ) {
 
     suspend fun snapshot(rpc: EthRpc, block: BlockHeader, account: String): AccountSnapshot {
         val n = block.number
-        val vaults = findVaults(rpc, n, account).mapNotNull { (v, mine) -> readVault(rpc, n, v, account, block.timestamp)?.copy(createdByMe = mine) }
+        val vaults = findVaults(rpc, n, account).mapNotNull { f ->
+            readVault(rpc, n, f.vault, account, block.timestamp)
+                ?.copy(createdByMe = f.mine, canReleaseNow = f.factory.equals(SepoliaConfig.FACTORY, ignoreCase = true))
+        }
         val me = topicOf(account)
         // Sent and received are kept apart: anyone can create payments to this address (cheaply, in a worthless
         // token), and those must never push the account's own still-cancellable payments out of view.
@@ -259,9 +265,11 @@ internal class VaultReader(
      * joined later by a key rotation): VaultCreated (primary or recovery) from the factory, and key
      * rotations asked only of the factory's own vaults (public RPCs refuse address-less log queries).
      */
-    private suspend fun findVaults(rpc: EthRpc, to: BigInteger, account: String): List<Pair<String, Boolean>> {
+    private suspend fun findVaults(rpc: EthRpc, to: BigInteger, account: String): List<Found> {
         val me = topicOf(account)
-        val created = logs(rpc, listOf(factory), listOf(VAULT_CREATED), to)
+        // Every factory, oldest first: vaults then come out in the order they were opened.
+        val created = factories.flatMap { f -> logs(rpc, listOf(f), listOf(VAULT_CREATED), to) }
+        val factoryOf = created.associate { addressFromTopic(it.topics[1]) to it.address }
         val mine = created.filter { it.topics.getOrNull(2) == me }.map { addressFromTopic(it.topics[1]) }.toSet()
         val candidates = created.filter { it.topics.getOrNull(2) == me || it.topics.getOrNull(3) == me }
             .map { addressFromTopic(it.topics[1]) }
@@ -272,8 +280,14 @@ internal class VaultReader(
             logs(rpc, batch, listOf(PRIMARY_REPLACED, me), to).forEach { candidates += checksumAddress(it.address) }
             logs(rpc, batch, listOf(RECOVERY_REPLACED, null, me), to).forEach { candidates += checksumAddress(it.address) }
         }
-        return candidates.filter { Abi.bool(rpc.call(factory, SafeChainCalls.isVault(it), to)) }.map { it to (it in mine) }
+        // Each vault is checked against the factory that announced it (a rotation-found one against every factory).
+        return candidates.mapNotNull { v ->
+            val f = (factoryOf[v]?.let(::listOf) ?: factories).firstOrNull { f -> Abi.bool(rpc.call(f, SafeChainCalls.isVault(v), to)) }
+            f?.let { Found(v, mine = v in mine, factory = it) }
+        }
     }
+
+    private data class Found(val vault: String, val mine: Boolean, val factory: String)
 
     private suspend fun logs(rpc: EthRpc, addresses: List<String>, topics: List<String?>, to: BigInteger): List<LogEntry> {
         val out = mutableListOf<LogEntry>()
