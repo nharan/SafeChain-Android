@@ -23,6 +23,7 @@ import com.tangem.feature.safechain.chain.SafeChainCalls
 import com.tangem.feature.safechain.chain.SepoliaConfig
 import com.tangem.feature.safechain.chain.Token
 import com.tangem.feature.safechain.chain.TxSender
+import com.tangem.feature.safechain.chain.lookAlike
 import com.tangem.feature.safechain.chain.of
 import com.tangem.feature.safechain.chain.VaultReader
 import com.tangem.feature.safechain.chain.VaultView
@@ -853,15 +854,18 @@ internal class SafeChainModel @Inject constructor(
                 }
                 if (to.equals(v.address, ignoreCase = true)) return sheet(sh.copy(error = "That's your Savings itself."))
                 val hold = holdText(v.delaySeconds)
+                val poison = if (sh.toChecking) null else lookAlikeWarning(to)
                 review(
                     title = if (sh.toChecking) "Move ${money(amount, t)} to Checking" else "Send ${money(amount, t)}",
-                    rows = listOf(
+                    rows = listOfNotNull(
+                        poison?.let { "⚠ Look-alike address" to it },
                         "To" to if (sh.toChecking) "Your Checking (this card)\n${groupedAddress(to)}" else groupedAddress(to),
                         "Arrives" to "In $hold. Until then you can cancel, and the money comes straight back.",
                     ),
                     note = "Check every character of the address. You can also check it from another device at safechain.rep.run.",
                     calls = listOf(Call(v.address, SafeChainCalls.requestWithdrawal(t.address, amount, to))),
                     doneTitle = "Moving · arrives in $hold",
+                    danger = poison != null,
                 )
             }
             else -> Unit
@@ -878,6 +882,9 @@ internal class SafeChainModel @Inject constructor(
         val to = parseAddress(sh.to) ?: return sheet(sh.copy(error = "Paste the destination's full address (0x…)."))
         val what = money(amount, t)
         val check = "Check every character of the address. You can also check it from another device at safechain.rep.run."
+        // Address poisoning: a different address that starts and ends like one this card paid before.
+        val poison = lookAlikeWarning(to)
+        val poisonRow = poison?.let { "⚠ Look-alike address" to it }
         if (sh.from == Source.Savings) {
             val v = current() ?: return sheet(sh.copy(error = "Open Savings first."))
             if (v.locked) return sheet(sh.copy(error = "Savings is locked."))
@@ -886,11 +893,19 @@ internal class SafeChainModel @Inject constructor(
             val hold = holdText(v.delaySeconds)
             return review(
                 title = "Send $what from Savings",
-                rows = listOf("To" to groupedAddress(to), "Arrives" to "In $hold. Until then you can cancel, and the money comes straight back to Savings."),
+                rows = listOfNotNull(
+                    poisonRow,
+                    "To" to groupedAddress(to),
+                    "Arrives" to "In $hold. Until then you can cancel, and the money comes straight back to Savings.",
+                ),
                 note = check,
                 calls = listOf(Call(v.address, SafeChainCalls.requestWithdrawal(t.address, amount, to))),
                 doneTitle = "Sending · arrives in $hold",
-            )
+                danger = poison != null,
+            ) {
+                val w = current()?.withdrawals?.firstOrNull { it.to.equals(to, ignoreCase = true) && it.amount == amount && it.state == 1 }
+                sent("Sending · arrives in $hold", what, w?.deadline ?: (chainNow() + v.delaySeconds), w?.let { SepoliaConfig.explorerWithdrawal(v.address, it.id.toString()) })
+            }
         }
 
         if (amount > checkingOf(s, t)) return sheet(sh.copy(error = "Only ${sh.max} ${t.symbol} is in Checking."))
@@ -899,10 +914,11 @@ internal class SafeChainModel @Inject constructor(
             // The escrow holds tokens only, so ETH always goes at once.
             return review(
                 title = "Send $what from Checking",
-                rows = listOf("To" to groupedAddress(to), "Arrives" to "Immediately. ETH sends can't be cancelled."),
+                rows = listOfNotNull(poisonRow, "To" to groupedAddress(to), "Arrives" to "Immediately. ETH sends can't be cancelled."),
                 note = check,
                 calls = listOf(Call(to, ByteArray(0), amount)),
                 doneTitle = "Sent",
+                danger = poison != null,
             )
         }
         val seconds = if (sh.hold == HOLD_CUSTOM) {
@@ -918,10 +934,11 @@ internal class SafeChainModel @Inject constructor(
         if (seconds == 0L) {
             return review(
                 title = "Send $what from Checking",
-                rows = listOf("To" to groupedAddress(to), "Arrives" to "Immediately. An instant send can't be cancelled."),
+                rows = listOfNotNull(poisonRow, "To" to groupedAddress(to), "Arrives" to "Immediately. An instant send can't be cancelled."),
                 note = "$check Choose a hold instead if you might want to undo it.",
                 calls = listOf(Call(t.address, SafeChainCalls.transfer(to, amount))),
                 doneTitle = "Sent",
+                danger = poison != null,
             )
         }
 
@@ -931,7 +948,8 @@ internal class SafeChainModel @Inject constructor(
             review(
                 title = "Send $what from Checking",
                 step = if (allowance < amount) "Step 2 of 2" else null,
-                rows = listOf(
+                rows = listOfNotNull(
+                    poisonRow,
                     "To" to groupedAddress(to),
                     "Arrives" to "In $hold. Until then you can cancel, and the money comes straight back to Checking.",
                     "Held by" to "SafeChain's payment escrow (no owner, can't be changed)\n${groupedAddress(SepoliaConfig.ESCROW)}",
@@ -939,7 +957,11 @@ internal class SafeChainModel @Inject constructor(
                 note = check,
                 calls = listOf(Call(SepoliaConfig.ESCROW, SafeChainCalls.createPayment(t.address, to, amount, seconds))),
                 doneTitle = "Sending · arrives in $hold",
-            )
+                danger = poison != null,
+            ) {
+                val p = snapshot?.payments?.firstOrNull { it.recipient.equals(to, ignoreCase = true) && it.amount == amount && it.state == 1 }
+                sent("Sending · arrives in $hold", what, p?.deadline ?: (chainNow() + seconds), p?.let { "${SepoliaConfig.EXPLORER}/payment/${it.id}" })
+            }
         }
         if (allowance >= amount) return pay()
         // Once per token: let the escrow take what Checking sends with a hold. It only ever takes from the card,
@@ -955,6 +977,43 @@ internal class SafeChainModel @Inject constructor(
             calls = listOf(Call(t.address, SafeChainCalls.approve(SepoliaConfig.ESCROW, MAX_UINT))),
             doneTitle = "Protected ${t.symbol} payments on",
         ) { pay() }
+    }
+
+    /**
+     * Where this card has sent money before, to catch a look-alike destination: Savings withdrawals, protected
+     * payments and instant sends.
+     */
+    private fun paidBefore(): List<String> {
+        val s = snapshot ?: return emptyList()
+        val me = account?.address ?: return emptyList()
+        return s.vaults.flatMap { v -> v.withdrawals.map { it.to } } +
+            s.payments.filter { it.sender.equals(me, ignoreCase = true) }.map { it.recipient } +
+            s.checkingActivity.filter { it.kind == ActivityView.Kind.CheckingSent }.mapNotNull { it.address }
+    }
+
+    private fun lookAlikeWarning(to: String): String? = lookAlike(to, paidBefore())?.let { known ->
+        "This address starts and ends like ${short(known)}, which you paid before, but the middle is different. " +
+            "That's how address poisoning works. Only continue if the recipient gave you this exact address just now."
+    }
+
+    /**
+     * Sent with a hold: the recipient can confirm it's theirs by looking up their own address, which they know
+     * for certain, before it arrives. If it isn't there, the sender still has time to cancel.
+     */
+    private fun sent(title: String, what: String, arrivesAt: Long, url: String?) {
+        val share = "I'm sending you $what (Sepolia test network) with SafeChain. It arrives ${time(arrivesAt)}, " +
+            "and I can cancel it until then.\n\nPlease check it's coming to you: go to safechain.rep.run and search " +
+            "your own address. You should see $what on its way, with a timer. If it's not there, tell me before it arrives."
+        sheet(
+            SheetUM.Result(
+                ok = true,
+                title = title,
+                text = (if (demo != null) "Demo: nothing was sent. " else "") +
+                    "Ask the recipient to search their own address at safechain.rep.run. They'll see it on its way, with the timer, and can tell you in time if it isn't there.",
+                url = url,
+                share = share,
+            ),
+        )
     }
 
     override fun onCancelPayment(id: String) {

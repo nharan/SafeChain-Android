@@ -277,7 +277,8 @@ internal sealed interface SheetUM {
 
     data class Working(val title: String, val text: String, val holdCard: Boolean) : SheetUM
 
-    data class Result(val ok: Boolean, val title: String, val text: String, val url: String?) : SheetUM
+    /** [share]: a message for the recipient (a payment with a hold), offered with a Share button. */
+    data class Result(val ok: Boolean, val title: String, val text: String, val url: String?, val share: String? = null) : SheetUM
 }
 
 internal interface SafeChainActions {

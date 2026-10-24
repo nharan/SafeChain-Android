@@ -1590,13 +1590,15 @@ private fun ReviewSheet(r: SheetUM.Review, actions: SafeChainActions) {
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             r.rows.forEach { (label, value) ->
+                // A warning row ("⚠ Look-alike address") reads in red, so it can't be skimmed past.
+                val warn = label.startsWith("⚠")
                 Column {
-                    Text(label, style = TangemTheme.typography.caption2, color = TangemTheme.colors.text.tertiary)
+                    Text(label, style = TangemTheme.typography.caption2, color = if (warn) Red else TangemTheme.colors.text.tertiary)
                     value.split("\n").forEach { line ->
                         if (line.startsWith("0x ")) {
                             Mono(line, TangemTheme.colors.text.primary1)
                         } else {
-                            Text(line, style = TangemTheme.typography.body2, color = TangemTheme.colors.text.primary1)
+                            Text(line, style = TangemTheme.typography.body2, color = if (warn) Red else TangemTheme.colors.text.primary1)
                         }
                     }
                 }
@@ -1641,7 +1643,22 @@ private fun ResultSheet(r: SheetUM.Result, actions: SafeChainActions) {
         Text(r.text, style = TangemTheme.typography.body2, color = TangemTheme.colors.text.secondary, textAlign = TextAlign.Center)
         r.url?.let { TextButton(text = "View on explorer", onClick = { runCatching { uri.openUri(it) } }) }
     }
-    PrimaryButton(text = "Done", onClick = actions::onCloseSheet, modifier = Modifier.fillMaxWidth())
+    r.share?.let { message ->
+        val context = LocalContext.current
+        PrimaryButton(
+            text = "Share with recipient",
+            onClick = {
+                val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, message)
+                context.startActivity(Intent.createChooser(send, "Tell the recipient to check"))
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+    if (r.share != null) {
+        SecondaryButton(text = "Done", onClick = actions::onCloseSheet, modifier = Modifier.fillMaxWidth())
+    } else {
+        PrimaryButton(text = "Done", onClick = actions::onCloseSheet, modifier = Modifier.fillMaxWidth())
+    }
 }
 
 @Composable
