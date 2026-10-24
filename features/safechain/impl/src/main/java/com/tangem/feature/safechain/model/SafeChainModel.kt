@@ -37,6 +37,11 @@ import com.tangem.feature.safechain.signing.toEip712Bytes
 import com.tangem.feature.safechain.ui.ActivityUM
 import com.tangem.feature.safechain.ui.BackupChangeUM
 import com.tangem.feature.safechain.ui.HealthUM
+import com.tangem.feature.safechain.ui.HoldUnit
+import com.tangem.feature.safechain.ui.MAX_HOLD_SECONDS
+import com.tangem.feature.safechain.ui.MIN_HOLD_SECONDS
+import com.tangem.feature.safechain.ui.holdSeconds
+import com.tangem.feature.safechain.ui.holdText
 import com.tangem.feature.safechain.ui.PreviousVaultUM
 import com.tangem.feature.safechain.ui.SafeChainActions
 import com.tangem.feature.safechain.ui.SafeChainUM
@@ -678,7 +683,7 @@ internal class SafeChainModel @Inject constructor(
                 from = from,
                 checkingMax = fmt(s.tokenBalance),
                 savingsMax = fmt(v?.available ?: BigInteger.ZERO),
-                savingsHold = v?.let { holdText(it.delaySeconds / HOUR) },
+                savingsHold = v?.let { holdText(it.delaySeconds) },
                 savingsLocked = v?.locked == true,
             ),
         )
@@ -686,7 +691,13 @@ internal class SafeChainModel @Inject constructor(
 
     override fun onSendFrom(source: Source) = updateSend { it.copy(from = source, error = null) }
     override fun onHoldChange(hours: String) = updateSend { it.copy(hold = hours, error = null) }
-    override fun onCustomHoursChange(value: String) = updateSend { it.copy(customHours = value.filter(Char::isDigit).take(3), error = null) }
+    override fun onCustomHoursChange(value: String) = updateSend {
+        // Digits and one decimal point ("0.1" hours, "1,5" on comma keyboards).
+        val clean = value.replace(',', '.').filter { c -> c.isDigit() || c == '.' }
+        val oneDot = clean.substringBefore('.') + clean.substringAfter('.', "").let { r -> if ('.' in clean) ".${r.replace(".", "")}" else "" }
+        it.copy(customHours = oneDot.take(6), error = null)
+    }
+    override fun onCustomUnitChange(unit: HoldUnit) = updateSend { it.copy(customUnit = unit, error = null) }
 
     private fun updateSend(f: (SheetUM.Send) -> SheetUM.Send) = state.update {
         (it.sheet as? SheetUM.Send)?.let { sh -> it.copy(sheet = f(sh)) } ?: it
@@ -777,7 +788,7 @@ internal class SafeChainModel @Inject constructor(
             if (v.locked) return sheet(sh.copy(error = "Savings is locked."))
             if (amount > v.available) return sheet(sh.copy(error = "Only ${sh.savingsMax} is available in Savings."))
             if (to.equals(v.address, ignoreCase = true)) return sheet(sh.copy(error = "That's your Savings itself."))
-            val hold = holdText(v.delaySeconds / HOUR)
+            val hold = holdText(v.delaySeconds)
             return review(
                 title = "Send ${fmt(amount)} $symbol from Savings",
                 rows = listOf("To" to groupedAddress(to), "Arrives" to "In $hold. Until then you can cancel, and the money comes straight back to Savings."),
@@ -789,11 +800,17 @@ internal class SafeChainModel @Inject constructor(
 
         if (amount > s.tokenBalance) return sheet(sh.copy(error = "Only ${sh.checkingMax} is in Checking."))
         if (to.equals(me, ignoreCase = true)) return sheet(sh.copy(error = "That's this card's own address."))
-        val hours = (if (sh.hold == HOLD_CUSTOM) sh.customHours else sh.hold).toLongOrNull()
-            ?: return sheet(sh.copy(error = "Enter the hold in hours, 1 to 720."))
-        if (hours != 0L && hours !in 1..MAX_HOURS) return sheet(sh.copy(error = "A hold is 1 to 720 hours (30 days)."))
+        val seconds = if (sh.hold == HOLD_CUSTOM) {
+            holdSeconds(sh.customHours, sh.customUnit)
+                ?: return sheet(sh.copy(error = "Enter how long to hold it, for example 10 minutes or 1.5 hours."))
+        } else {
+            sh.hold.toLong() * HOUR
+        }
+        if (seconds != 0L && seconds !in MIN_HOLD_SECONDS..MAX_HOLD_SECONDS) {
+            return sheet(sh.copy(error = "A hold is 5 minutes to 30 days."))
+        }
 
-        if (hours == 0L) {
+        if (seconds == 0L) {
             return review(
                 title = "Send ${fmt(amount)} $symbol from Checking",
                 rows = listOf("To" to groupedAddress(to), "Arrives" to "Immediately. An instant send can't be cancelled."),
@@ -803,7 +820,7 @@ internal class SafeChainModel @Inject constructor(
             )
         }
 
-        val hold = holdText(hours)
+        val hold = holdText(seconds)
         val pay = {
             review(
                 title = "Send ${fmt(amount)} $symbol from Checking",
@@ -814,7 +831,7 @@ internal class SafeChainModel @Inject constructor(
                     "Held by" to "SafeChain's payment escrow (no owner, can't be changed)\n${groupedAddress(SepoliaConfig.ESCROW)}",
                 ),
                 note = check,
-                calls = listOf(Call(SepoliaConfig.ESCROW, SafeChainCalls.createPayment(SepoliaConfig.TOKEN, to, amount, hours * HOUR))),
+                calls = listOf(Call(SepoliaConfig.ESCROW, SafeChainCalls.createPayment(SepoliaConfig.TOKEN, to, amount, seconds))),
                 doneTitle = "Sending · arrives in $hold",
             )
         }
@@ -1154,7 +1171,6 @@ internal class SafeChainModel @Inject constructor(
         const val SECONDS_PER_BLOCK = 12L
         const val POLICY_NEW_RECOVERY = 1
         const val HOURS_PER_DAY = 24L
-        const val HOURS_PER_WEEK = 168L
         const val HOLD_CUSTOM = "custom"
         const val MAX_ACTIVITY_ROWS = 30
         val ESCROW_KINDS = setOf(
@@ -1164,13 +1180,6 @@ internal class SafeChainModel @Inject constructor(
             ActivityView.Kind.PaymentSettled,
         )
 
-        /** 1 → "1 hour", 24 → "1 day", 72 → "3 days", 168 → "1 week", 30 → "30 hours". */
-        fun holdText(hours: Long): String = when {
-            hours == 1L -> "1 hour"
-            hours == HOURS_PER_WEEK -> "1 week"
-            hours % HOURS_PER_DAY == 0L -> (hours / HOURS_PER_DAY).let { if (it == 1L) "1 day" else "$it days" }
-            else -> "$hours hours"
-        }
         const val DEMO_KEY_BYTES = 65
         const val DEMO_STEP_MS = 900L
         val DEMO_FEE: BigInteger = BigInteger.valueOf(1_000_000_000)

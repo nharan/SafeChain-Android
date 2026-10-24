@@ -18,7 +18,8 @@ internal object SepoliaConfig {
     const val TOKEN_SYMBOL = "PWTEST"
     const val TOKEN_DECIMALS = 18
     const val FACTORY = "0x1f153E74c6Aa3cc1FFB775f8166C028654625665"
-    const val ESCROW = "0x0c57772f68D4Ff4c432270b616F08c4884507913"
+    /** Redeployed 2026-10-23 with a 5-minute shortest hold (was 0x0c57772f…7913, 1 hour). */
+    const val ESCROW = "0x8F727931aB9a297EbfB90280060c3a54f1C979f2"
     const val START_BLOCK = 11_979_489L
 
     /**

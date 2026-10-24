@@ -1040,22 +1040,41 @@ private fun SendPage(sh: SheetUM.Send, actions: SafeChainActions) {
             OutlinedTextField(
                 value = sh.customHours,
                 onValueChange = actions::onCustomHoursChange,
-                label = { Text("Hold") },
-                suffix = { Text("hours") },
-                supportingText = { Text("1 to 720 hours (30 days)") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                label = { Text("Hold for") },
+                suffix = { Text(sh.customUnit.label) },
+                supportingText = { Text("5 minutes to 30 days. Decimals work, like 0.5 hours.") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 singleLine = true,
                 colors = fieldColors(),
                 shape = RoundedCornerShape(14.dp),
                 modifier = Modifier.fillMaxWidth(),
             )
+            // Unit as a segmented control: one row, the chosen one filled.
+            Row(
+                Modifier.fillMaxWidth().clip(PillShape).background(TangemTheme.colors.background.primary).padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                HoldUnit.entries.forEach { unit ->
+                    val on = sh.customUnit == unit
+                    Text(
+                        unit.label.replaceFirstChar(Char::uppercase),
+                        color = if (on) TangemTheme.colors.text.primary2 else TangemTheme.colors.text.primary1,
+                        style = TangemTheme.typography.button,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.weight(1f).clip(PillShape)
+                            .background(if (on) TangemTheme.colors.button.primary else Color.Transparent)
+                            .clickable { actions.onCustomUnitChange(unit) }
+                            .padding(vertical = 10.dp),
+                    )
+                }
+            }
         }
     }
 
-    val customHours = sh.customHours.toLongOrNull()
+    val customSeconds = holdSeconds(sh.customHours, sh.customUnit)?.takeIf { it in MIN_HOLD_SECONDS..MAX_HOLD_SECONDS }
     val holdLabel = when {
         sh.from == Source.Savings -> sh.savingsHold ?: "the Savings hold"
-        sh.hold == HOLD_CUSTOM -> customHours?.let { holdLabel(it) } ?: "the hold you choose"
+        sh.hold == HOLD_CUSTOM -> customSeconds?.let(::holdText) ?: "the hold you choose"
         else -> HOLDS.firstOrNull { it.first == sh.hold }?.second ?: ""
     }
     when {
@@ -1068,13 +1087,6 @@ private fun SendPage(sh: SheetUM.Send, actions: SafeChainActions) {
         )
     }
     sh.error?.let { Text(it, color = Red, style = TangemTheme.typography.body2) }
-}
-
-private fun holdLabel(hours: Long): String = when {
-    hours == 1L -> "1 hour"
-    hours == 168L -> "1 week"
-    hours % 24 == 0L -> (hours / 24).let { if (it == 1L) "1 day" else "$it days" }
-    else -> "$hours hours"
 }
 
 @Composable

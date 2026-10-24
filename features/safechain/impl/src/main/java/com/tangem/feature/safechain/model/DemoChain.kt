@@ -245,7 +245,7 @@ internal class DemoChain(private val now: () -> Long = { System.currentTimeMilli
                 val amount = uintArg(2)
                 val protection = uintArg(3).toLong()
                 if (recipient.equals(from, ignoreCase = true) || recipient == ZERO_ADDRESS) throw Revert("InvalidRecipient")
-                if (protection < HOUR || protection > 30 * DAY) throw Revert("InvalidProtection")
+                if (protection < 5 * 60 || protection > 30 * DAY) throw Revert("InvalidProtection")
                 if (amount > escrowAllowance) throw Revert("ERC20: insufficient allowance")
                 if (amount > cardTokens) throw Revert("ERC20: transfer amount exceeds balance")
                 cardTokens -= amount

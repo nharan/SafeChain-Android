@@ -169,7 +169,9 @@ internal sealed interface SheetUM {
         val savingsLocked: Boolean = false,
         /** Hours for a Checking send: "0" (instant), "1", "24", "72", "168", or "custom". */
         val hold: String = "24",
+        /** The custom hold as typed (decimals allowed), in [customUnit]. */
         val customHours: String = "",
+        val customUnit: HoldUnit = HoldUnit.Minutes,
         val error: String? = null,
     ) : SheetUM {
         val max: String get() = if (from == Source.Checking) checkingMax else savingsMax
@@ -231,6 +233,7 @@ internal interface SafeChainActions {
     fun onSendFrom(source: Source)
     fun onHoldChange(hours: String)
     fun onCustomHoursChange(value: String)
+    fun onCustomUnitChange(unit: HoldUnit)
     fun onCancelPayment(id: String)
     fun onSettlePayment(id: String)
     fun onOpenReceive()
