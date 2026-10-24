@@ -24,8 +24,8 @@ internal object SepoliaConfig {
     const val EXPLORER_TX = "https://sepolia.etherscan.io/tx/"
 
     /**
-     * Where the recovery device signs its consent: the SafeChain web wallet in Sepolia mode
-     * (`npm run dev:sepolia` in SafeChain/web), opened on the device that holds the recovery key.
+     * Where the recovery device signs its consent: the hosted SafeChain site's consent page
+     * (SafeChain/web, deployed with `npm run deploy`), opened where the recovery key's wallet is.
      */
-    const val CONSENT_PAGE = "http://localhost:5173/#/consent/"
+    const val CONSENT_PAGE = "https://safechain.rep.run/#/consent/"
 }
