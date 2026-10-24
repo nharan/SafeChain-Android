@@ -14,15 +14,18 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -54,6 +57,7 @@ import com.tangem.core.ui.components.TextButton
 import com.tangem.core.ui.components.appbar.AppBarWithBackButton
 import com.tangem.core.ui.components.rememberQrPainter
 import com.tangem.core.ui.res.TangemTheme
+import com.tangem.core.ui.utils.WindowInsetsZero
 import com.tangem.feature.safechain.chain.SepoliaConfig
 import com.tangem.feature.safechain.chain.groupedAddress
 
@@ -71,8 +75,9 @@ private val CardShape = RoundedCornerShape(20.dp)
 internal fun SafeChainScreen(state: SafeChainUM, actions: SafeChainActions, modifier: Modifier = Modifier) {
     Column(modifier = modifier.fillMaxSize().background(TangemTheme.colors.background.secondary)) {
         AppBarWithBackButton(onBackClick = actions::onBack, text = "Protected Savings")
+        // The app draws edge to edge, so the keyboard doesn't resize the window: keep the setup fields above it.
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().navigationBarsPadding().imePadding(),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             item { HealthBanner(state.health, state.loadError) }
@@ -453,9 +458,20 @@ private fun Sheet(sheet: SheetUM, actions: SafeChainActions) {
         onDismissRequest = { if (canDismiss) actions.onCloseSheet() },
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true, confirmValueChange = { canDismiss }),
         containerColor = TangemTheme.colors.background.primary,
+        // Insets are handled below, as Tangem's own sheets do: the app draws edge to edge, so without this the
+        // keyboard covers the lower fields (the destination address) instead of pushing them up.
+        contentWindowInsets = { WindowInsetsZero },
     ) {
+        // Keyboard padding outside the scroll, so the viewport ends above the keyboard and the focused field
+        // is scrolled into view.
         Column(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp).navigationBarsPadding(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .imePadding()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             when (sheet) {
