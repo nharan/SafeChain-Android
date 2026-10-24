@@ -85,17 +85,19 @@ internal fun SafeChainScreen(state: SafeChainUM, actions: SafeChainActions, modi
             when {
                 state.loading && vault == null -> item { Loading() }
                 vault != null -> {
-                    item { Summary(state, vault) }
+                    state.previous.forEach { p -> item(key = "prev${p.address}") { PreviousVault(p, actions) } }
+                    item { Summary(state, vault, actions) }
                     item { Actions(vault, actions) }
                     vault.alerts.forEach { a -> item(key = a) { Alert(a) } }
+                    vault.backupChange?.let { b -> item { BackupChange(b, actions) } }
                     if (vault.pending.isNotEmpty()) {
-                        item { SectionTitle("On its way out") }
+                        item { SectionTitle("Sending") }
                         vault.pending.forEach { w -> item(key = "w${w.id}") { PendingRow(w, actions) } }
                     }
                     item { SectionTitle("Activity") }
                     item { ActivityList(vault.activity) }
                     item { SectionTitle("Security") }
-                    item { SecurityCard(vault, state.accountAddress) }
+                    item { SecurityCard(vault, state, actions) }
                 }
                 state.accountAddress != null -> item { Setup(state, actions) }
             }
@@ -176,26 +178,33 @@ private fun HealthBanner(health: HealthUM, loadError: String?) {
 // ------------------------------------------------------------------ vault
 
 @Composable
-private fun Summary(state: SafeChainUM, v: VaultUM) = Card {
+private fun Summary(state: SafeChainUM, v: VaultUM, actions: SafeChainActions) = Card {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Savings", style = TangemTheme.typography.subtitle2, color = TangemTheme.colors.text.tertiary)
+        Text("Protected balance", style = TangemTheme.typography.subtitle2, color = TangemTheme.colors.text.tertiary)
         Spacer(Modifier.weight(1f))
-        if (v.locked) Chip("Locked", Red, RedBg, R.drawable.ic_lock_24) else Chip(v.protection, Green, GreenBg, R.drawable.ic_shield_24)
+        if (v.locked) Chip("Locked", Red, RedBg, R.drawable.ic_lock_24) else Chip("Protected · ${v.delay}", Green, GreenBg, R.drawable.ic_shield_24)
     }
     Text(v.balance, fontSize = 34.sp, fontWeight = FontWeight.SemiBold, color = TangemTheme.colors.text.primary1)
     Text(
-        "Every withdrawal waits ${v.protection.substringAfter("· ")} and can be cancelled until then.",
+        if (v.locked) {
+            "Locked: nothing can be sent until the backup key unlocks it."
+        } else {
+            "Every payment waits ${v.delay}, and you can cancel it until then. Cancelled money comes straight back here."
+        },
         style = TangemTheme.typography.body2,
         color = TangemTheme.colors.text.secondary,
     )
+    if (v.locked && v.backupIsThisPhone) {
+        PrimaryButton(text = "Unlock with this phone", onClick = actions::onUnlock, modifier = Modifier.fillMaxWidth())
+    }
     Spacer(Modifier.height(2.dp))
     Row {
         Column(Modifier.weight(1f)) {
-            Text("Spending (card)", style = TangemTheme.typography.caption2, color = TangemTheme.colors.text.tertiary)
-            Text(state.spendingBalance, style = TangemTheme.typography.body1, color = TangemTheme.colors.text.primary1)
+            Text("Still on your card", style = TangemTheme.typography.caption2, color = TangemTheme.colors.text.tertiary)
+            Text(state.cardBalance, style = TangemTheme.typography.body1, color = TangemTheme.colors.text.primary1)
         }
         Column(horizontalAlignment = Alignment.End) {
-            Text("Gas", style = TangemTheme.typography.caption2, color = TangemTheme.colors.text.tertiary)
+            Text("Network fees", style = TangemTheme.typography.caption2, color = TangemTheme.colors.text.tertiary)
             Text(state.gasBalance, style = TangemTheme.typography.body2, color = TangemTheme.colors.text.secondary)
         }
     }
@@ -204,9 +213,9 @@ private fun Summary(state: SafeChainUM, v: VaultUM) = Card {
 @Composable
 private fun Actions(v: VaultUM, actions: SafeChainActions) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        ActionButton("Send", R.drawable.ic_arrow_up_24, enabled = v.isPrimary && !v.locked, onClick = actions::onOpenWithdraw, modifier = Modifier.weight(1f))
+        ActionButton("Receive", R.drawable.ic_arrow_down_24, enabled = true, onClick = actions::onOpenReceive, modifier = Modifier.weight(1f))
         ActionButton("Add", R.drawable.ic_plus_24, enabled = v.isPrimary, onClick = actions::onOpenAddFunds, modifier = Modifier.weight(1f))
-        ActionButton("Withdraw", R.drawable.ic_arrow_up_24, enabled = v.isPrimary && !v.locked, onClick = actions::onOpenWithdraw, modifier = Modifier.weight(1f))
-        ActionButton("Lock", R.drawable.ic_lock_24, enabled = !v.locked, onClick = actions::onLock, modifier = Modifier.weight(1f), danger = true)
     }
 }
 
@@ -270,10 +279,10 @@ private fun PendingRow(w: WithdrawalUM, actions: SafeChainActions) = Card {
         ) {
             Icon(painterResource(R.drawable.ic_close_24), null, tint = Red, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(6.dp))
-            Text("Cancel withdrawal", color = Red, style = TangemTheme.typography.button)
+            Text("Cancel · money comes back", color = Red, style = TangemTheme.typography.button)
         }
     }
-    if (w.canRelease) SecondaryButton(text = "Release", onClick = { actions.onReleaseWithdrawal(w.id) }, modifier = Modifier.fillMaxWidth())
+    if (w.canRelease) SecondaryButton(text = "Deliver now", onClick = { actions.onReleaseWithdrawal(w.id) }, modifier = Modifier.fillMaxWidth())
 }
 
 @Composable
@@ -306,11 +315,88 @@ private fun ActivityList(items: List<ActivityUM>) = Card {
 }
 
 @Composable
-private fun SecurityCard(v: VaultUM, me: String?) = Card {
-    KeyRow("Spending key", "This card", me)
-    KeyRow("Recovery key", if (v.isRecovery) "This card" else "Your other device", v.recovery)
+private fun SecurityCard(v: VaultUM, state: SafeChainUM, actions: SafeChainActions) = Card {
+    KeyRow("Spends", "This card", state.accountAddress)
+    KeyRow("Backup key", if (v.backupIsThisPhone) "This phone · fingerprint" else "Another wallet", v.recovery)
+    if (v.backupIsThisPhone) {
+        Text(
+            "Emergency fees on this phone: ${state.phoneKeyGas}",
+            style = TangemTheme.typography.caption2,
+            color = TangemTheme.colors.text.tertiary,
+        )
+    }
     KeyRow("Safe haven", if (v.haven == null) "Not set" else "Set", v.haven)
-    KeyRow("Vault", "On ${SepoliaConfig.NAME}", v.address)
+    KeyRow("Savings address", "On ${SepoliaConfig.NAME}", v.address)
+    when {
+        v.locked -> Unit
+        v.backupIsThisPhone -> DangerRow("Lost your card? Lock with this phone", R.drawable.ic_fingerprint_24, actions::onEmergencyLock)
+        v.isPrimary -> DangerRow("Lock now (card)", R.drawable.ic_lock_24, actions::onLock)
+    }
+    if (v.haven != null && v.isPrimary) SecondaryButton(text = "Move everything to your safe haven", onClick = actions::onMoveToHaven, modifier = Modifier.fillMaxWidth())
+    if (v.backupIsThisPhone && v.backupChange == null && v.isPrimary) {
+        TextButton(text = "Use another wallet as the backup instead", onClick = actions::onOpenOtherWallet)
+    }
+    if (!v.backupIsThisPhone && v.isPrimary) {
+        Text(
+            "Can't use that backup any more, or want this phone as the backup? Start a new Savings protected by this phone and move your money there.",
+            style = TangemTheme.typography.caption2,
+            color = TangemTheme.colors.text.tertiary,
+        )
+        SecondaryButton(text = "New Savings with this phone as backup", onClick = actions::onMoveToNewVault, modifier = Modifier.fillMaxWidth())
+    }
+}
+
+@Composable
+private fun DangerRow(text: String, @DrawableRes icon: Int, onClick: () -> Unit) = Row(
+    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(RedBg).clickable(onClick = onClick).padding(vertical = 12.dp),
+    horizontalArrangement = Arrangement.Center,
+    verticalAlignment = Alignment.CenterVertically,
+) {
+    Icon(painterResource(icon), null, tint = Red, modifier = Modifier.size(18.dp))
+    Spacer(Modifier.width(6.dp))
+    Text(text, color = Red, style = TangemTheme.typography.button)
+}
+
+@Composable
+private fun BackupChange(b: BackupChangeUM, actions: SafeChainActions) = Card {
+    Text("Backup key change", style = TangemTheme.typography.subtitle1, color = TangemTheme.colors.text.primary1)
+    Text("New backup key", style = TangemTheme.typography.caption2, color = TangemTheme.colors.text.tertiary)
+    Mono(groupedAddress(b.newBackup), TangemTheme.colors.text.primary1)
+    when {
+        !b.approved && b.canApproveFromPhone -> {
+            Text("Waiting for this phone to approve.", style = TangemTheme.typography.body2, color = TangemTheme.colors.text.secondary)
+            PrimaryButton(text = "Approve with fingerprint", onClick = actions::onApproveBackupChange, modifier = Modifier.fillMaxWidth())
+        }
+        !b.approved -> Text("Waiting for the other key to approve.", style = TangemTheme.typography.body2, color = TangemTheme.colors.text.secondary)
+        b.canFinish -> PrimaryButton(text = "Finish", onClick = actions::onFinishBackupChange, modifier = Modifier.fillMaxWidth())
+        else -> Text(b.waitText.orEmpty(), style = TangemTheme.typography.body2, color = TangemTheme.colors.text.secondary)
+    }
+    SecondaryButton(text = "Cancel this change", onClick = actions::onCancelBackupChange, modifier = Modifier.fillMaxWidth())
+}
+
+@Composable
+private fun PreviousVault(p: PreviousVaultUM, actions: SafeChainActions) = Card {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("Previous Savings", style = TangemTheme.typography.subtitle2, color = TangemTheme.colors.text.tertiary)
+            Text(p.balance, style = TangemTheme.typography.subtitle1, color = TangemTheme.colors.text.primary1)
+        }
+        Mono("${p.address.take(6)}…${p.address.takeLast(4)}", TangemTheme.colors.text.tertiary)
+    }
+    p.moving.forEach { w ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Moving ${w.amount}", style = TangemTheme.typography.body2, color = TangemTheme.colors.text.primary1, modifier = Modifier.weight(1f))
+            when {
+                w.isFinal -> Chip("Ready", Green, GreenBg)
+                w.countdown != null -> Chip(w.countdown, Amber, AmberBg, R.drawable.ic_clock_24)
+            }
+        }
+        if (w.canRelease) PrimaryButton(text = "Bring it here now", onClick = { actions.onReleaseFromPrevious(p.address, w.id) }, modifier = Modifier.fillMaxWidth())
+    }
+    if (p.canMove && p.moving.isEmpty()) {
+        Text("Move it into your current Savings. It waits out the old protection period first.", style = TangemTheme.typography.body2, color = TangemTheme.colors.text.secondary)
+        PrimaryButton(text = "Move ${p.available} here", onClick = { actions.onMoveFromPrevious(p.address) }, modifier = Modifier.fillMaxWidth())
+    }
 }
 
 @Composable
@@ -341,27 +427,17 @@ private fun Footer(state: SafeChainUM) = Text(
 @Composable
 private fun Setup(state: SafeChainUM, actions: SafeChainActions) = Card {
     val s = state.setup
-    val clipboard = LocalClipboardManager.current
-    val context = LocalContext.current
     Icon(painterResource(R.drawable.ic_shield_24), null, tint = Green, modifier = Modifier.size(36.dp))
     Text("Protect your savings", fontSize = 24.sp, fontWeight = FontWeight.SemiBold, color = TangemTheme.colors.text.primary1)
     Text(
-        "Money in Protected Savings can only leave after a waiting period, and you can cancel any withdrawal until then. " +
-            "Your card is the spending key; a second key on another device can also cancel and lock.",
+        "Every payment waits before it leaves, and you can cancel it until then: the money comes straight back. " +
+            "Your card spends. " +
+            if (s.otherWallet) "Another wallet you own is the backup key." else "This phone is the backup key: if your card is ever lost or stolen, your fingerprint locks everything.",
         style = TangemTheme.typography.body2,
         color = TangemTheme.colors.text.secondary,
     )
 
-    Step(1, "Your recovery key")
-    AddressField(
-        value = s.recovery,
-        label = "Recovery key address (another device)",
-        onChange = actions::onSetupRecoveryChange,
-        onPaste = { clipboard.getText()?.text?.let(actions::onSetupRecoveryChange) },
-        onScan = actions::onScanRecovery,
-    )
-
-    Step(2, "Waiting period")
+    Text("Waiting period", style = TangemTheme.typography.subtitle1, color = TangemTheme.colors.text.primary1, modifier = Modifier.padding(top = 8.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         listOf("24" to "1 day", "72" to "3 days", "168" to "7 days").forEach { (h, label) ->
             val on = s.delayHours == h
@@ -377,45 +453,79 @@ private fun Setup(state: SafeChainUM, actions: SafeChainActions) = Card {
         }
     }
 
-    Step(3, "Confirm with the recovery key")
+    if (!s.otherWallet) {
+        PrimaryButton(text = "Create Protected Savings", onClick = actions::onSetupCreate, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+        Text(
+            "One fingerprint, one card tap.",
+            style = TangemTheme.typography.caption2,
+            color = TangemTheme.colors.text.tertiary,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        TextButton(text = "Use another wallet as the backup instead", onClick = { actions.onSetupUseOtherWallet(true) })
+    } else {
+        OtherWalletSetup(s, actions)
+        TextButton(text = "Use this phone as the backup instead", onClick = { actions.onSetupUseOtherWallet(false) })
+    }
+    s.error?.let { Text(it, color = Red, style = TangemTheme.typography.body2) }
+}
+
+@Composable
+private fun OtherWalletSetup(s: SetupUM, actions: SafeChainActions) {
+    val clipboard = LocalClipboardManager.current
+    Step(1, "Your backup wallet")
+    AddressField(
+        value = s.recovery,
+        label = "Backup wallet address (another device)",
+        onChange = actions::onSetupRecoveryChange,
+        onPaste = { clipboard.getText()?.text?.let(actions::onSetupRecoveryChange) },
+        onScan = actions::onScanRecovery,
+    )
+    Step(2, "Confirm with that wallet")
     if (s.consentLink == null) {
         PrimaryButton(text = "Continue", onClick = actions::onSetupMakeLink, modifier = Modifier.fillMaxWidth())
     } else {
-        Text(
-            "Open this on the device with your recovery key and sign. It's free and only says \"I agree to protect this card's savings\".",
-            style = TangemTheme.typography.body2,
-            color = TangemTheme.colors.text.secondary,
-        )
-        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            Image(
-                painter = rememberQrPainter(s.consentLink, size = 220.dp, padding = 8.dp),
-                contentDescription = "Consent link QR code",
-                modifier = Modifier.size(220.dp).clip(RoundedCornerShape(16.dp)).border(1.dp, TangemTheme.colors.stroke.primary, RoundedCornerShape(16.dp)),
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            SecondaryButton(
-                text = "Share link",
-                onClick = {
-                    val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, s.consentLink)
-                    context.startActivity(Intent.createChooser(send, "Send to your recovery device"))
-                },
-                modifier = Modifier.weight(1f),
-            )
-            SecondaryButton(text = "Copy", onClick = { clipboard.setText(AnnotatedString(s.consentLink)) }, modifier = Modifier.weight(1f))
-        }
-
-        Step(4, "Bring back the signature")
+        ConsentLink(s.consentLink)
+        Step(3, "Bring back the signature")
         AddressField(
             value = s.signature,
-            label = "Recovery key's signature",
+            label = "Backup wallet's signature",
             onChange = actions::onSetupSignatureChange,
             onPaste = { clipboard.getText()?.text?.let(actions::onSetupSignatureChange) },
             onScan = actions::onScanSignature,
         )
-        PrimaryButton(text = "Create Protected Savings", onClick = actions::onSetupCreate, modifier = Modifier.fillMaxWidth())
+        PrimaryButton(text = "Create Protected Savings", onClick = actions::onSetupCreateWithOtherWallet, modifier = Modifier.fillMaxWidth())
     }
-    s.error?.let { Text(it, color = Red, style = TangemTheme.typography.body2) }
+}
+
+/** The consent link as a QR, with Share and Copy, for the device that holds the other wallet. */
+@Composable
+private fun ConsentLink(link: String) {
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    Text(
+        "Open this where that wallet is and sign. It's free and only says \"I agree to be this vault's backup key\".",
+        style = TangemTheme.typography.body2,
+        color = TangemTheme.colors.text.secondary,
+    )
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Image(
+            painter = rememberQrPainter(link, size = 220.dp, padding = 8.dp),
+            contentDescription = "Consent link QR code",
+            modifier = Modifier.size(220.dp).clip(RoundedCornerShape(16.dp)).border(1.dp, TangemTheme.colors.stroke.primary, RoundedCornerShape(16.dp)),
+        )
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        SecondaryButton(
+            text = "Share link",
+            onClick = {
+                val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, link)
+                context.startActivity(Intent.createChooser(send, "Send to your backup wallet"))
+            },
+            modifier = Modifier.weight(1f),
+        )
+        SecondaryButton(text = "Copy", onClick = { clipboard.setText(AnnotatedString(link)) }, modifier = Modifier.weight(1f))
+    }
 }
 
 @Composable
@@ -475,8 +585,10 @@ private fun Sheet(sheet: SheetUM, actions: SafeChainActions) {
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             when (sheet) {
-                is SheetUM.AddFunds -> AmountSheet("Add to Savings", "On your card: ${sheet.max}", sheet.amount, sheet.error, null, actions)
-                is SheetUM.Withdraw -> AmountSheet("Withdraw", "Available: ${sheet.max}", sheet.amount, sheet.error, sheet.to, actions)
+                is SheetUM.AddFunds -> AmountSheet("Add from your card", "On your card: ${sheet.max}", sheet.amount, sheet.error, null, actions)
+                is SheetUM.Withdraw -> AmountSheet("Send", "Available: ${sheet.max}", sheet.amount, sheet.error, sheet.to, actions)
+                is SheetUM.Receive -> ReceiveSheet(sheet)
+                is SheetUM.OtherWallet -> OtherWalletSheet(sheet, actions)
                 is SheetUM.Review -> ReviewSheet(sheet, actions)
                 is SheetUM.Working -> WorkingSheet(sheet)
                 is SheetUM.Result -> ResultSheet(sheet, actions)
@@ -517,7 +629,7 @@ private fun AmountSheet(title: String, hint: String, amount: String, error: Stri
             onScan = actions::onScanDestination,
         )
         Text(
-            "It waits out the protection period first. You can cancel it until then.",
+            "It waits out the protection period before it's delivered. Until then you can cancel, and the money comes back.",
             style = TangemTheme.typography.caption2,
             color = TangemTheme.colors.text.tertiary,
         )
@@ -531,7 +643,11 @@ private fun ReviewSheet(r: SheetUM.Review, actions: SafeChainActions) {
     r.step?.let { Text(it, style = TangemTheme.typography.caption2, color = TangemTheme.colors.text.tertiary) }
     SheetTitle(r.title, if (r.danger) Red else TangemTheme.colors.text.primary1)
     Text(
-        "Your card signs exactly this. It has no screen, so check it here.",
+        if (r.withPhone) {
+            "This phone's backup key signs exactly this, after your fingerprint."
+        } else {
+            "Your card signs exactly this. It has no screen, so check it here."
+        },
         style = TangemTheme.typography.body2,
         color = TangemTheme.colors.text.secondary,
     )
@@ -556,7 +672,7 @@ private fun ReviewSheet(r: SheetUM.Review, actions: SafeChainActions) {
     }
     r.note?.let { Text(it, style = TangemTheme.typography.body2, color = if (r.danger) Red else TangemTheme.colors.text.secondary) }
     Text(r.fee, style = TangemTheme.typography.caption2, color = TangemTheme.colors.text.tertiary)
-    PrimaryButton(text = "Sign with card", onClick = actions::onSign, modifier = Modifier.fillMaxWidth())
+    PrimaryButton(text = if (r.withPhone) "Confirm with fingerprint" else "Sign with card", onClick = actions::onSign, modifier = Modifier.fillMaxWidth())
     SecondaryButton(text = "Not now", onClick = actions::onCloseSheet, modifier = Modifier.fillMaxWidth())
 }
 
@@ -592,4 +708,67 @@ private fun ResultSheet(r: SheetUM.Result, actions: SafeChainActions) {
         r.url?.let { TextButton(text = "View on explorer", onClick = { runCatching { uri.openUri(it) } }) }
     }
     PrimaryButton(text = "Done", onClick = actions::onCloseSheet, modifier = Modifier.fillMaxWidth())
+}
+
+@Composable
+private fun ReceiveSheet(r: SheetUM.Receive) {
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    SheetTitle("Receive")
+    Text(
+        "Anything sent to this address lands in your protected balance. ${SepoliaConfig.NAME} test tokens (${SepoliaConfig.TOKEN_SYMBOL}) only.",
+        style = TangemTheme.typography.body2,
+        color = TangemTheme.colors.text.secondary,
+    )
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Image(
+            painter = rememberQrPainter(r.address, size = 220.dp, padding = 8.dp),
+            contentDescription = "Savings address QR code",
+            modifier = Modifier.size(220.dp).clip(RoundedCornerShape(16.dp)).border(1.dp, TangemTheme.colors.stroke.primary, RoundedCornerShape(16.dp)),
+        )
+    }
+    SelectionContainer { Mono(groupedAddress(r.address), TangemTheme.colors.text.primary1) }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        SecondaryButton(
+            text = "Share",
+            onClick = {
+                val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, r.address)
+                context.startActivity(Intent.createChooser(send, "Share your Savings address"))
+            },
+            modifier = Modifier.weight(1f),
+        )
+        SecondaryButton(text = "Copy", onClick = { clipboard.setText(AnnotatedString(r.address)) }, modifier = Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun OtherWalletSheet(o: SheetUM.OtherWallet, actions: SafeChainActions) {
+    val clipboard = LocalClipboardManager.current
+    SheetTitle("Use another wallet as the backup")
+    Text(
+        "Your card proposes it, this phone approves with your fingerprint, and it takes effect after the waiting period. Until then this phone stays the backup.",
+        style = TangemTheme.typography.body2,
+        color = TangemTheme.colors.text.secondary,
+    )
+    AddressField(
+        value = o.address,
+        label = "Other wallet's address",
+        onChange = actions::onOtherWalletAddressChange,
+        onPaste = { clipboard.getText()?.text?.let(actions::onOtherWalletAddressChange) },
+        onScan = actions::onScanOtherWallet,
+    )
+    if (o.link == null) {
+        PrimaryButton(text = "Continue", onClick = actions::onOtherWalletMakeLink, modifier = Modifier.fillMaxWidth())
+    } else {
+        ConsentLink(o.link)
+        AddressField(
+            value = o.signature,
+            label = "That wallet's signature",
+            onChange = actions::onOtherWalletSignatureChange,
+            onPaste = { clipboard.getText()?.text?.let(actions::onOtherWalletSignatureChange) },
+            onScan = actions::onScanOtherWalletSignature,
+        )
+        PrimaryButton(text = "Continue", onClick = actions::onOtherWalletContinue, modifier = Modifier.fillMaxWidth())
+    }
+    o.error?.let { Text(it, color = Red, style = TangemTheme.typography.body2) }
 }

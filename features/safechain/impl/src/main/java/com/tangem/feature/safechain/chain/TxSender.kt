@@ -12,7 +12,11 @@ internal class TxSender(private val endpoints: List<EthRpc>, private val chainId
 
     data class Prepared(val tx: Eip1559Tx, val maxCostWei: BigInteger)
 
-    suspend fun prepare(from: String, to: String, data: ByteArray): Prepared {
+    /**
+     * [nonceOffset] > 0 prepares a transaction to follow others from the same sender that aren't sent yet
+     * (signed in the same card tap). [value] is ETH in wei, for funding the phone's backup key.
+     */
+    suspend fun prepare(from: String, to: String, data: ByteArray, value: BigInteger = BigInteger.ZERO, nonceOffset: Int = 0): Prepared {
         val rpc = endpoints.first()
         // Simulate against every endpoint that answers: if any says it reverts, don't ask for a tap.
         val estimates = endpoints.map { runCatching { it.estimateGas(from, to, data) } }
@@ -20,11 +24,12 @@ internal class TxSender(private val endpoints: List<EthRpc>, private val chainId
             ?.let { throw it.exceptionOrNull()!! }
         val gasEstimate = estimates.mapNotNull { it.getOrNull() }.maxOrNull() ?: throw estimates.first().exceptionOrNull()!!
         val gas = gasEstimate * GAS_MARGIN_NUM / GAS_MARGIN_DEN
-        val nonce = endpoints.mapNotNull { runCatching { it.nonce(from) }.getOrNull() }.maxOrNull() ?: rpc.nonce(from)
+        val nonce = (endpoints.mapNotNull { runCatching { it.nonce(from) }.getOrNull() }.maxOrNull() ?: rpc.nonce(from)) +
+            BigInteger.valueOf(nonceOffset.toLong())
         val baseFee = rpc.block(null).baseFee
         val tip = runCatching { rpc.maxPriorityFee() }.getOrDefault(DEFAULT_TIP).max(MIN_TIP)
         val maxFee = baseFee * BigInteger.TWO + tip
-        val tx = Eip1559Tx(chainId, nonce, tip, maxFee, gas, to, BigInteger.ZERO, data)
+        val tx = Eip1559Tx(chainId, nonce, tip, maxFee, gas, to, value, data)
         return Prepared(tx, maxCostWei = gas * maxFee)
     }
 

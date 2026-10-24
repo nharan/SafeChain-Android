@@ -88,6 +88,23 @@ internal class CardEthSigner @Inject constructor(
         }
     }
 
+    /** One tap for several transactions (e.g. create a vault and fund the backup key), in order. */
+    suspend fun signAll(userWalletId: UserWalletId, account: EthAccount, hashes: List<ByteArray>): List<Rsv> {
+        if (hashes.size == 1) return listOf(sign(userWalletId, account, hashes.single()))
+        val wallet = userWalletsListRepository.getSyncStrict(userWalletId)
+        if (wallet !is UserWallet.Cold) throw SafeChainSignerError.NotACard()
+        return when (val result = signer(wallet).sign(hashes, account.publicKey)) {
+            is CompletionResult.Success -> {
+                check(result.data.size == hashes.size) { "The card returned ${result.data.size} signatures for ${hashes.size} transactions" }
+                result.data.mapIndexed { i, sig -> EvmSignature.fromCard(sig, hashes[i], account.publicKey) }
+            }
+            is CompletionResult.Failure -> throw when (val e = result.error) {
+                is TangemSdkError.UserCancelled -> SafeChainSignerError.Cancelled()
+                else -> SafeChainSignerError.Card(e)
+            }
+        }
+    }
+
     private fun signer(wallet: UserWallet.Cold): TransactionSigner {
         val card = wallet.scanResponse.card
         val isCardNotBackedUp = card.backupStatus?.isActive != true && !card.isTangemTwins

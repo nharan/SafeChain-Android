@@ -18,6 +18,9 @@ internal data class WithdrawalView(
     val disputed: Boolean = false,
 )
 
+/** SavingsVault.pendingPolicyChange(): kind 1 = new recovery key, 2 = new safe haven, 3 = shorter delay. */
+internal data class PolicyView(val kind: Int, val proposer: String, val approved: Boolean, val eta: Long, val newAddress: String)
+
 internal data class VaultView(
     val address: String,
     val primary: String,
@@ -31,6 +34,10 @@ internal data class VaultView(
     val previousPrimary: String,
     val vetoUntil: Long,
     val withdrawals: List<WithdrawalView>,
+    /** Proposal numbers so far; the next proposal is [policyNonce] + 1. */
+    val policyNonce: BigInteger = BigInteger.ZERO,
+    /** A security change waiting for approval or for its delay, or null. */
+    val policy: PolicyView? = null,
     /** Newest first, at most [VaultReader.MAX_ACTIVITY]. */
     val activity: List<ActivityView> = emptyList(),
     val disputed: Boolean = false,
@@ -80,6 +87,9 @@ internal data class AccountSnapshot(
                 pendingPrimary = versions.firstOrNull { it.pendingPrimary != ZERO_ADDRESS }?.pendingPrimary ?: ZERO_ADDRESS,
                 vetoUntil = versions.map { it.vetoUntil }.filter { it > 0 }.minOrNull() ?: 0,
                 withdrawals = withdrawals,
+                // A change any endpoint reports is shown; the contract decides whether it can go through.
+                policy = versions.firstNotNullOfOrNull { it.policy },
+                policyNonce = versions.maxOf { it.policyNonce },
                 // Union of what any endpoint reported (by transaction and log position), newest first.
                 activity = versions.flatMap { it.activity }.distinctBy { it.txHash to it.logIndex }
                     .sortedWith(compareByDescending<ActivityView> { it.block }.thenByDescending { it.logIndex }),
@@ -105,7 +115,8 @@ internal class VaultReader(private val token: String = SepoliaConfig.TOKEN, priv
     }
 
     /**
-     * Vaults whose history names [account]: VaultCreated (primary or recovery) from the factory, and key
+     * Vaults whose history names [account], oldest first (the order they were created, then any the account
+     * joined later by a key rotation): VaultCreated (primary or recovery) from the factory, and key
      * rotations asked only of the factory's own vaults (public RPCs refuse address-less log queries).
      */
     private suspend fun findVaults(rpc: EthRpc, to: BigInteger, account: String): List<String> {
@@ -113,14 +124,14 @@ internal class VaultReader(private val token: String = SepoliaConfig.TOKEN, priv
         val created = logs(rpc, listOf(factory), listOf(VAULT_CREATED), to)
         val candidates = created.filter { it.topics.getOrNull(2) == me || it.topics.getOrNull(3) == me }
             .map { addressFromTopic(it.topics[1]) }
-            .toMutableSet()
+            .toCollection(LinkedHashSet())
         val allVaults = created.map { addressFromTopic(it.topics[1]) }
         for (batch in allVaults.chunked(VAULTS_PER_QUERY)) {
             logs(rpc, batch, listOf(PRIMARY_REPLACED, null, me), to).forEach { candidates += checksumAddress(it.address) }
             logs(rpc, batch, listOf(PRIMARY_REPLACED, me), to).forEach { candidates += checksumAddress(it.address) }
             logs(rpc, batch, listOf(RECOVERY_REPLACED, null, me), to).forEach { candidates += checksumAddress(it.address) }
         }
-        return candidates.filter { Abi.bool(rpc.call(factory, SafeChainCalls.isVault(it), to)) }.sorted()
+        return candidates.filter { Abi.bool(rpc.call(factory, SafeChainCalls.isVault(it), to)) }
     }
 
     private suspend fun logs(rpc: EthRpc, addresses: List<String>, topics: List<String?>, to: BigInteger): List<LogEntry> {
@@ -174,6 +185,15 @@ internal class VaultReader(private val token: String = SepoliaConfig.TOKEN, priv
             previousPrimary = previous,
             vetoUntil = vetoUntil,
             withdrawals = withdrawals,
+            policyNonce = Abi.uint(word(SafeChainCalls.view("policyNonce"))),
+            policy = Abi.words(word(SafeChainCalls.pendingPolicyChange())).let { p ->
+                val kind = Abi.uint(p[0]).toInt()
+                if (kind == 0) {
+                    null
+                } else {
+                    PolicyView(kind, Abi.address(p[1]), Abi.bool(p[2]), Abi.uint(p[3]).toLong(), Abi.address(p[4]))
+                }
+            },
             activity = logs(rpc, listOf(vault), emptyList(), n)
                 .mapNotNull(ActivityView::decode)
                 .sortedWith(compareByDescending<ActivityView> { it.block }.thenByDescending { it.logIndex })

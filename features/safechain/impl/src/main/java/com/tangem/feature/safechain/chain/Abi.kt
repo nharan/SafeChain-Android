@@ -87,6 +87,12 @@ internal object SafeChainCalls {
     fun cancelWithdrawal(id: BigInteger) = Abi.call("cancelWithdrawal(uint256)", uint(id))
     fun executeWithdrawal(id: BigInteger) = Abi.call("executeWithdrawal(uint256)", uint(id))
     fun lock() = Abi.call("lock()")
+    fun unlock() = Abi.call("unlock()")
+    fun proposeRecoveryChange(newRecovery: String, consent: ByteArray) =
+        Abi.call("proposeRecoveryChange(address,bytes)", addr(newRecovery), Abi.Arg.DynBytes(consent))
+    fun approvePolicyChange(nonce: BigInteger) = Abi.call("approvePolicyChange(uint256)", uint(nonce))
+    fun executePolicyChange(nonce: BigInteger) = Abi.call("executePolicyChange(uint256)", uint(nonce))
+    fun cancelPolicyChange() = Abi.call("cancelPolicyChange()")
     fun requestHavenWithdrawal(token: String, amount: BigInteger, clearFirst: List<BigInteger>) = Abi.call(
         "requestHavenWithdrawal(address,uint256,uint256[])", addr(token), uint(amount), Abi.Arg.UintArray(clearFirst),
     )
@@ -94,6 +100,8 @@ internal object SafeChainCalls {
 
     // ERC-20
     fun approve(spender: String, amount: BigInteger) = Abi.call("approve(address,uint256)", addr(spender), uint(amount))
+    /** A plain transfer into a vault counts as a deposit: one tap instead of approve + deposit. */
+    fun transfer(to: String, amount: BigInteger) = Abi.call("transfer(address,uint256)", addr(to), uint(amount))
     fun balanceOf(owner: String) = Abi.call("balanceOf(address)", addr(owner))
 
     // Escrow
@@ -128,4 +136,6 @@ internal object SafeChainCalls {
     fun available(token: String) = Abi.call("available(address)", addr(token))
     fun getWithdrawal(id: BigInteger) = Abi.call("getWithdrawal(uint256)", uint(id))
     fun withdrawalState(id: BigInteger) = Abi.call("withdrawalState(uint256)", uint(id))
+    /** (kind, proposer, approved, eta, newAddress, newDelay): six static words. */
+    fun pendingPolicyChange() = Abi.call("pendingPolicyChange()")
 }

@@ -46,6 +46,7 @@ dependencies {
     implementation(deps.compose.ui)
     implementation(deps.compose.ui.tooling)
     implementation(deps.androidx.appCompat)
+    implementation(deps.androidx.biometric)
     implementation(deps.decompose)
     implementation(deps.kotlin.coroutines)
     implementation(deps.lifecycle.compose)
@@ -63,4 +64,6 @@ dependencies {
     testImplementation(deps.test.mockk)
     testImplementation(deps.test.truth)
     testImplementation(deps.test.coroutine)
+    // Plain ECDSA, to check the phone key's signatures independently of the code under test
+    testImplementation(deps.spongecastle.core)
 }
