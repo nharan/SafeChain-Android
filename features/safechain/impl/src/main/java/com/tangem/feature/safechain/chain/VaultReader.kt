@@ -45,12 +45,30 @@ internal data class VaultView(
     val disputed: Boolean = false,
 )
 
+/** ProtectedTransferEscrow.paymentState: 1 pending (cancellable), 2 final (awaiting settlement), 3 settled, 4 cancelled. */
+internal data class PaymentView(
+    val id: BigInteger,
+    val sender: String,
+    val recipient: String,
+    val amount: BigInteger,
+    val createdAt: Long,
+    val deadline: Long,
+    val state: Int,
+    val disputed: Boolean = false,
+)
+
 internal data class AccountSnapshot(
     val address: String,
     val ethBalance: BigInteger,
     val tokenBalance: BigInteger,
     val vaults: List<VaultView>,
     val chainTime: Long,
+    /** Protected payments this account sent or receives through the escrow, newest first. */
+    val payments: List<PaymentView> = emptyList(),
+    /** Checking's own history: instant sends and receipts, and its protected payments. */
+    val checkingActivity: List<ActivityView> = emptyList(),
+    /** What the escrow may take from Checking (a one-time approval enables protected payments). */
+    val escrowAllowance: BigInteger = BigInteger.ZERO,
 ) {
     companion object {
         /**
@@ -63,11 +81,22 @@ internal data class AccountSnapshot(
             return first.copy(
                 ethBalance = all.minOf { it.ethBalance },
                 tokenBalance = all.minOf { it.tokenBalance },
+                escrowAllowance = all.minOf { it.escrowAllowance },
+                payments = all.flatMap { it.payments }.groupBy { it.id }.values.map { ps ->
+                    ps.first().copy(
+                        state = ps.minByOrNull { STATE_URGENCY.indexOf(it.state) }!!.state,
+                        deadline = ps.minOf { it.deadline },
+                        amount = ps.maxOf { it.amount },
+                        disputed = ps.size < all.size || ps.toSet().size > 1,
+                    )
+                }.sortedByDescending { it.id },
+                checkingActivity = all.flatMap { it.checkingActivity }.distinctBy { it.txHash to it.logIndex }
+                    .sortedWith(compareByDescending<ActivityView> { it.block }.thenByDescending { it.logIndex }),
                 vaults = byVault.values.map { versions -> mergeVault(versions, reportedByAll = versions.size == all.size) },
             )
         }
 
-        private val STATE_URGENCY = listOf(1, 2, 3, 4, 0)
+        val STATE_URGENCY = listOf(1, 2, 3, 4, 0)
 
         private fun mergeVault(versions: List<VaultView>, reportedByAll: Boolean): VaultView {
             val v = versions.first()
@@ -103,18 +132,87 @@ internal data class AccountSnapshot(
 }
 
 /** Reads one account's SafeChain state from one endpoint at one block. */
-internal class VaultReader(private val token: String = SepoliaConfig.TOKEN, private val factory: String = SepoliaConfig.FACTORY) {
+internal class VaultReader(
+    private val token: String = SepoliaConfig.TOKEN,
+    private val factory: String = SepoliaConfig.FACTORY,
+    private val escrow: String = SepoliaConfig.ESCROW,
+) {
 
     suspend fun snapshot(rpc: EthRpc, block: BlockHeader, account: String): AccountSnapshot {
         val n = block.number
         val vaults = findVaults(rpc, n, account).mapNotNull { readVault(rpc, n, it, account, block.timestamp) }
+        val me = topicOf(account)
+        val sent = logs(rpc, listOf(escrow), listOf(PAYMENT_CREATED, null, me), n)
+        val received = logs(rpc, listOf(escrow), listOf(PAYMENT_CREATED, null, null, me), n)
+        val payments = (sent + received).distinctBy { it.topics[1] }
+            .sortedByDescending { Hex.toBigInteger(it.topics[1]) }
+            .take(MAX_PAYMENTS)
+            .map { readPayment(rpc, n, Hex.toBigInteger(it.topics[1])) }
         return AccountSnapshot(
             address = account,
             ethBalance = rpc.balance(account, n),
             tokenBalance = Abi.uint(rpc.call(token, SafeChainCalls.balanceOf(account), n)),
             vaults = vaults,
             chainTime = block.timestamp,
+            payments = payments,
+            checkingActivity = checkingActivity(rpc, n, account, vaults.map { it.address }, sent, received),
+            escrowAllowance = Abi.uint(rpc.call(token, SafeChainCalls.allowance(account, escrow), n)),
         )
+    }
+
+    private suspend fun readPayment(rpc: EthRpc, n: BigInteger, id: BigInteger): PaymentView {
+        val w = Abi.words(rpc.call(escrow, SafeChainCalls.getPayment(id), n))
+        return PaymentView(
+            id = id,
+            sender = Abi.address(w[0]),
+            createdAt = Abi.uint(w[1]).toLong(),
+            recipient = Abi.address(w[2]),
+            deadline = Abi.uint(w[3]).toLong(),
+            amount = Abi.uint(w[6]),
+            state = Abi.uint(rpc.call(escrow, SafeChainCalls.paymentState(id), n)).toInt(),
+        )
+    }
+
+    /**
+     * Checking's history: protected payments it sent or receives (and their cancellation or delivery), plus
+     * instant token transfers. Transfers to or from its own vaults and the escrow are left out: Savings'
+     * activity and the payment entries already tell those.
+     */
+    @Suppress("LongParameterList")
+    private suspend fun checkingActivity(
+        rpc: EthRpc,
+        n: BigInteger,
+        account: String,
+        vaults: List<String>,
+        sent: List<LogEntry>,
+        received: List<LogEntry>,
+    ): List<ActivityView> {
+        val me = topicOf(account)
+        val own = (vaults + escrow).map { it.lowercase() }.toSet()
+        fun amountWord(log: LogEntry, i: Int) = Abi.words(Hex.decode(log.data)).getOrNull(i)?.let(Abi::uint)
+        fun base(kind: ActivityView.Kind, log: LogEntry) = ActivityView(kind, log.blockNumber, log.txHash, log.logIndex)
+
+        val created = sent.map { base(ActivityView.Kind.PaymentSent, it).copy(withdrawalId = Hex.toBigInteger(it.topics[1]), amount = amountWord(it, 1), address = addressFromTopic(it.topics[3]), by = account) } +
+            received.map { base(ActivityView.Kind.PaymentReceived, it).copy(withdrawalId = Hex.toBigInteger(it.topics[1]), amount = amountWord(it, 1), address = addressFromTopic(it.topics[2])) }
+        val ids = created.mapNotNull { it.withdrawalId }.toSet()
+        val outcomes = if (ids.isEmpty()) {
+            emptyList()
+        } else {
+            logs(rpc, listOf(escrow), listOf(PAYMENT_CANCELLED), n).map { ActivityView.Kind.PaymentCancelled to it } +
+                logs(rpc, listOf(escrow), listOf(PAYMENT_SETTLED), n).map { ActivityView.Kind.PaymentSettled to it }
+        }.mapNotNull { (kind, log) ->
+            val id = Hex.toBigInteger(log.topics[1])
+            if (id in ids) base(kind, log).copy(withdrawalId = id, by = log.topics.getOrNull(2)?.let(::addressFromTopic)) else null
+        }
+        val transfersOut = logs(rpc, listOf(token), listOf(ERC20_TRANSFER, me), n)
+            .filter { addressFromTopic(it.topics[2]).lowercase() !in own }
+            .map { base(ActivityView.Kind.CheckingSent, it).copy(amount = amountWord(it, 0), address = addressFromTopic(it.topics[2]), by = account) }
+        val transfersIn = logs(rpc, listOf(token), listOf(ERC20_TRANSFER, null, me), n)
+            .filter { addressFromTopic(it.topics[1]).lowercase() !in own }
+            .map { base(ActivityView.Kind.CheckingReceived, it).copy(amount = amountWord(it, 0), address = addressFromTopic(it.topics[1])) }
+        return (created + outcomes + transfersOut + transfersIn)
+            .sortedWith(compareByDescending<ActivityView> { it.block }.thenByDescending { it.logIndex })
+            .take(MAX_ACTIVITY)
     }
 
     /**
@@ -240,6 +338,10 @@ internal class VaultReader(private val token: String = SepoliaConfig.TOKEN, priv
         val PRIMARY_REPLACED = eventTopic("PrimaryReplaced(address,address)")
         val RECOVERY_REPLACED = eventTopic("RecoveryReplaced(address,address)")
         val ERC20_TRANSFER = eventTopic("Transfer(address,address,uint256)")
+        val PAYMENT_CREATED = eventTopic("PaymentCreated(uint256,address,address,address,uint256,uint64)")
+        val PAYMENT_CANCELLED = eventTopic("PaymentCancelled(uint256,address)")
+        val PAYMENT_SETTLED = eventTopic("PaymentSettled(uint256,address)")
+        const val MAX_PAYMENTS = 25
 
         fun eventTopic(signature: String) = Hex.encode(signature.toByteArray(Charsets.US_ASCII).keccak())
         fun topicOf(address: String) = "0x" + "0".repeat(24) + address.removePrefix("0x").lowercase()

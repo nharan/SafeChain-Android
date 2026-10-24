@@ -83,6 +83,15 @@ internal class PhoneKeyCoreTest {
             "0xa9059cbb000000000000000000000000111111111111111111111111111111111111111100000000000000000000000000000000000000000000003635c9adc5dea00000",
         )
         assertThat(hex(SafeChainCalls.unlock())).isEqualTo("0xa69df4b5")
+        assertThat(hex(SafeChainCalls.settlePayment(BigInteger.valueOf(5))))
+            .isEqualTo("0x9f20c4f70000000000000000000000000000000000000000000000000000000000000005")
+        assertThat(hex(SafeChainCalls.getPayment(BigInteger.valueOf(5))))
+            .isEqualTo("0x3280a8360000000000000000000000000000000000000000000000000000000000000005")
+        assertThat(hex(SafeChainCalls.paymentState(BigInteger.valueOf(5))))
+            .isEqualTo("0xd035664d0000000000000000000000000000000000000000000000000000000000000005")
+        assertThat(hex(SafeChainCalls.allowance(ones, "0x0c57772f68D4Ff4c432270b616F08c4884507913"))).isEqualTo(
+            "0xdd62ed3e00000000000000000000000011111111111111111111111111111111111111110000000000000000000000000c57772f68d4ff4c432270b616f08c4884507913",
+        )
         assertThat(hex(SafeChainCalls.releaseVoided(BigInteger.valueOf(4))))
             .isEqualTo("0x897d7cd50000000000000000000000000000000000000000000000000000000000000004")
         assertThat(hex(SafeChainCalls.isVoid(BigInteger.valueOf(4))))

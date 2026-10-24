@@ -17,6 +17,7 @@ import com.tangem.feature.safechain.chain.Eip712
 import com.tangem.feature.safechain.chain.EthRpc
 import com.tangem.feature.safechain.chain.Hex
 import com.tangem.feature.safechain.chain.OkHttpEthRpc
+import com.tangem.feature.safechain.chain.PaymentView
 import com.tangem.feature.safechain.chain.RpcHealth
 import com.tangem.feature.safechain.chain.SafeChainCalls
 import com.tangem.feature.safechain.chain.SepoliaConfig
@@ -41,6 +42,7 @@ import com.tangem.feature.safechain.ui.SafeChainActions
 import com.tangem.feature.safechain.ui.SafeChainUM
 import com.tangem.feature.safechain.ui.SetupUM
 import com.tangem.feature.safechain.ui.SheetUM
+import com.tangem.feature.safechain.ui.Source
 import com.tangem.feature.safechain.ui.VaultUM
 import com.tangem.feature.safechain.ui.WithdrawalUM
 import com.tangem.features.safechain.SafeChainComponent
@@ -211,8 +213,22 @@ internal class SafeChainModel @Inject constructor(
         val me = account?.address ?: return
         val now = chainNow()
         val cur = current(s)
+        val vaultUM = cur?.toUM(me, now, s)
+        // Upcoming: both accounts' payments on their way (and protected payments coming in), soonest first.
+        val savingsUpcoming = cur?.let { v ->
+            v.withdrawals.filter { it.state in 1..2 }.map { it.deadline to it.toUM(me, now, v.delaySeconds, s, v.address) }
+        }.orEmpty()
+        val checkingUpcoming = s.payments.filter { it.state in 1..2 }.map { it.deadline to it.toUM(me, now, s) }
+        val upcoming = (savingsUpcoming + checkingUpcoming).sortedBy { it.first }.map { it.second }
+        // Activity: Savings' and Checking's history together, newest first.
+        val activity = (cur?.let { v -> v.activity.map { it to v.address } }.orEmpty() + s.checkingActivity.map { it to "" })
+            .sortedWith(compareByDescending<Pair<ActivityView, String>> { it.first.block }.thenByDescending { it.first.logIndex })
+            .take(MAX_ACTIVITY_ROWS)
+            .map { (a, vault) -> a.toUM(me, s, vault) }
         state.update { ui ->
             ui.copy(
+                upcoming = upcoming,
+                activity = activity,
                 total = money(s.tokenBalance + (cur?.balance ?: BigInteger.ZERO)),
                 cardBalance = money(s.tokenBalance),
                 gasBalance = "${fmt(s.ethBalance)} Sepolia ETH",
@@ -224,7 +240,7 @@ internal class SafeChainModel @Inject constructor(
                     is RpcHealth.Degraded -> HealthUM.Degraded(h.problems.joinToString(" · "))
                     is RpcHealth.Disagree -> HealthUM.Disagree(h.detail)
                 },
-                vault = cur?.toUM(me, now, s),
+                vault = vaultUM,
                 previous = s.vaults
                     .filter { it !== cur && it.primary.equals(me, ignoreCase = true) }
                     .filter { it.balance.signum() > 0 || it.withdrawals.any { w -> w.state in 1..2 } }
@@ -313,6 +329,30 @@ internal class SafeChainModel @Inject constructor(
         )
     }
 
+    /** A protected payment from (or to) Checking, through the escrow. */
+    private fun PaymentView.toUM(me: String, now: Long, s: AccountSnapshot): WithdrawalUM {
+        val incoming = !sender.equals(me, ignoreCase = true)
+        val other = if (incoming) sender else recipient
+        val span = (deadline - createdAt).coerceAtLeast(1)
+        return WithdrawalUM(
+            id = id.toString(),
+            source = Source.Checking,
+            incoming = incoming,
+            amount = money(amount),
+            to = other,
+            toLabel = label(other, me, s),
+            toHaven = false,
+            isFinal = state == 2,
+            countdown = if (state == 1 && deadline > now) "Arrives in ${duration(deadline - now)}" else null,
+            progress = ((now - createdAt).toFloat() / span).coerceIn(0f, 1f),
+            deadline = time(deadline),
+            canCancel = state == 1 && !incoming,
+            canRelease = state == 2,
+            disputed = disputed,
+            url = "${SepoliaConfig.EXPLORER}/payment/$id",
+        )
+    }
+
     private fun ActivityView.toUM(me: String, s: AccountSnapshot, vault: String): ActivityUM {
         val plus = amount?.let { "+${fmt(it)}" }
         val minus = amount?.let { "−${fmt(it)}" }
@@ -329,7 +369,7 @@ internal class SafeChainModel @Inject constructor(
                 if (by.equals(me, ignoreCase = true)) "" else "from ${label(by, me, s)}",
                 plus, ActivityUM.Icon.In, ActivityUM.Tone.Good,
             )
-            ActivityView.Kind.WithdrawalRequested -> Row("To ${label(address, me, s)}", "Payment #$withdrawalId started", minus, ActivityUM.Icon.Out, ActivityUM.Tone.Warning)
+            ActivityView.Kind.WithdrawalRequested -> Row("To ${label(address, me, s)}", "From Savings", minus, ActivityUM.Icon.Out, ActivityUM.Tone.Warning)
             ActivityView.Kind.HavenWithdrawalRequested -> Row("To your safe haven", "Move #$withdrawalId started", null, ActivityUM.Icon.Out, ActivityUM.Tone.Warning)
             ActivityView.Kind.WithdrawalCancelled -> Row("Payment #$withdrawalId cancelled", "Returned to Savings", null, ActivityUM.Icon.Returned, ActivityUM.Tone.Good)
             ActivityView.Kind.WithdrawalExecuted -> Row("Payment #$withdrawalId delivered", "", null, ActivityUM.Icon.Delivered, ActivityUM.Tone.Neutral)
@@ -343,11 +383,24 @@ internal class SafeChainModel @Inject constructor(
             ActivityView.Kind.HavenReplaced -> Row("Safe haven changed", "now ${short(address)}", null, ActivityUM.Icon.Key, ActivityUM.Tone.Warning)
             ActivityView.Kind.DelayChanged -> Row("Hold period changed", "", null, ActivityUM.Icon.Key, ActivityUM.Tone.Warning)
             ActivityView.Kind.SecurityChange -> Row("Security setting updated", "", null, ActivityUM.Icon.Key, ActivityUM.Tone.Neutral)
+            ActivityView.Kind.CheckingSent -> Row("To ${label(address, me, s)}", "From Checking · instant", minus, ActivityUM.Icon.Out, ActivityUM.Tone.Neutral)
+            ActivityView.Kind.CheckingReceived -> Row("Received in Checking", "from ${label(address, me, s)}", plus, ActivityUM.Icon.In, ActivityUM.Tone.Good)
+            ActivityView.Kind.PaymentSent -> Row("To ${label(address, me, s)}", "From Checking · protected", minus, ActivityUM.Icon.Out, ActivityUM.Tone.Warning)
+            ActivityView.Kind.PaymentReceived -> Row("From ${label(address, me, s)}", "To Checking · protected", plus, ActivityUM.Icon.In, ActivityUM.Tone.Good)
+            ActivityView.Kind.PaymentCancelled -> {
+                val mine = s.payments.firstOrNull { it.id == withdrawalId }?.sender?.equals(me, ignoreCase = true) != false
+                Row("Payment #$withdrawalId cancelled", if (mine) "Returned to Checking" else "Returned to the sender", null, ActivityUM.Icon.Returned, ActivityUM.Tone.Good)
+            }
+            ActivityView.Kind.PaymentSettled -> Row("Payment #$withdrawalId delivered", "", null, ActivityUM.Icon.Delivered, ActivityUM.Tone.Neutral)
         }
         // Block times are about 12 s apart on Sepolia; good enough for "how long ago".
         val ago = (snapshotBlock - block).toLong().coerceAtLeast(0) * SECONDS_PER_BLOCK
         // A payment opens its own page (countdown, destination, address check); anything else its transaction.
-        val url = withdrawalId?.let { SepoliaConfig.explorerWithdrawal(vault, it.toString()) } ?: (SepoliaConfig.EXPLORER_TX + txHash)
+        val url = when {
+            withdrawalId != null && kind in ESCROW_KINDS -> "${SepoliaConfig.EXPLORER}/payment/$withdrawalId"
+            withdrawalId != null && vault.isNotEmpty() -> SepoliaConfig.explorerWithdrawal(vault, withdrawalId.toString())
+            else -> SepoliaConfig.EXPLORER_TX + txHash
+        }
         return ActivityUM(row.title, row.detail.trim(), ago(ago), row.amount, url, row.icon, row.tone)
     }
 
@@ -615,8 +668,28 @@ internal class SafeChainModel @Inject constructor(
     }
 
     override fun onOpenWithdraw() {
-        val v = current() ?: return
-        sheet(SheetUM.Withdraw(max = fmt(v.available)))
+        val s = snapshot ?: return
+        val v = current()
+        val savingsUsable = v != null && !v.locked && v.primary.equals(account?.address, ignoreCase = true)
+        // Start from Checking, like a bank: it's the everyday account. Savings is one tap away.
+        val from = if (s.tokenBalance.signum() > 0 || !savingsUsable) Source.Checking else Source.Savings
+        sheet(
+            SheetUM.Send(
+                from = from,
+                checkingMax = fmt(s.tokenBalance),
+                savingsMax = fmt(v?.available ?: BigInteger.ZERO),
+                savingsHold = v?.let { holdText(it.delaySeconds / HOUR) },
+                savingsLocked = v?.locked == true,
+            ),
+        )
+    }
+
+    override fun onSendFrom(source: Source) = updateSend { it.copy(from = source, error = null) }
+    override fun onHoldChange(hours: String) = updateSend { it.copy(hold = hours, error = null) }
+    override fun onCustomHoursChange(value: String) = updateSend { it.copy(customHours = value.filter(Char::isDigit).take(3), error = null) }
+
+    private fun updateSend(f: (SheetUM.Send) -> SheetUM.Send) = state.update {
+        (it.sheet as? SheetUM.Send)?.let { sh -> it.copy(sheet = f(sh)) } ?: it
     }
 
     override fun onOpenReceive() {
@@ -628,23 +701,30 @@ internal class SafeChainModel @Inject constructor(
         when (val sh = it.sheet) {
             is SheetUM.AddFunds -> it.copy(sheet = sh.copy(amount = value, error = null))
             is SheetUM.Withdraw -> it.copy(sheet = sh.copy(amount = value, error = null))
+            is SheetUM.Send -> it.copy(sheet = sh.copy(amount = value, error = null))
             else -> it
         }
     }
 
     override fun onDestinationChange(value: String) = state.update {
-        (it.sheet as? SheetUM.Withdraw)?.let { sh -> it.copy(sheet = sh.copy(to = value.trim(), error = null)) } ?: it
+        when (val sh = it.sheet) {
+            is SheetUM.Withdraw -> it.copy(sheet = sh.copy(to = value.trim(), error = null))
+            is SheetUM.Send -> it.copy(sheet = sh.copy(to = value.trim(), error = null))
+            else -> it
+        }
     }
 
     override fun onMax() = state.update {
         when (val sh = it.sheet) {
             is SheetUM.AddFunds -> it.copy(sheet = sh.copy(amount = sh.max, error = null))
             is SheetUM.Withdraw -> it.copy(sheet = sh.copy(amount = sh.max, error = null))
+            is SheetUM.Send -> it.copy(sheet = sh.copy(amount = sh.max, error = null))
             else -> it
         }
     }
 
     override fun onContinue() {
+        (state.value.sheet as? SheetUM.Send)?.let { return send(it) }
         val v = current() ?: return
         when (val sh = state.value.sheet) {
             is SheetUM.AddFunds -> {
@@ -681,6 +761,102 @@ internal class SafeChainModel @Inject constructor(
             }
             else -> Unit
         }
+    }
+
+    /** Send from Savings (its hold) or from Checking (instant, or a hold you choose through the escrow). */
+    @Suppress("LongMethod", "ReturnCount")
+    private fun send(sh: SheetUM.Send) {
+        val s = snapshot ?: return
+        val me = account?.address ?: return
+        val amount = parseAmount(sh.amount) ?: return sheet(sh.copy(error = "Enter an amount, for example 100."))
+        val to = parseAddress(sh.to) ?: return sheet(sh.copy(error = "Paste the destination's full address (0x…)."))
+        val symbol = SepoliaConfig.TOKEN_SYMBOL
+        val check = "Check every character of the address. You can also check it from another device at safechain.rep.run."
+        if (sh.from == Source.Savings) {
+            val v = current() ?: return sheet(sh.copy(error = "Open Savings first."))
+            if (v.locked) return sheet(sh.copy(error = "Savings is locked."))
+            if (amount > v.available) return sheet(sh.copy(error = "Only ${sh.savingsMax} is available in Savings."))
+            if (to.equals(v.address, ignoreCase = true)) return sheet(sh.copy(error = "That's your Savings itself."))
+            val hold = holdText(v.delaySeconds / HOUR)
+            return review(
+                title = "Send ${fmt(amount)} $symbol from Savings",
+                rows = listOf("To" to groupedAddress(to), "Arrives" to "In $hold. Until then you can cancel, and the money comes straight back to Savings."),
+                note = check,
+                calls = listOf(Call(v.address, SafeChainCalls.requestWithdrawal(SepoliaConfig.TOKEN, amount, to))),
+                doneTitle = "Sending · arrives in $hold",
+            )
+        }
+
+        if (amount > s.tokenBalance) return sheet(sh.copy(error = "Only ${sh.checkingMax} is in Checking."))
+        if (to.equals(me, ignoreCase = true)) return sheet(sh.copy(error = "That's this card's own address."))
+        val hours = (if (sh.hold == HOLD_CUSTOM) sh.customHours else sh.hold).toLongOrNull()
+            ?: return sheet(sh.copy(error = "Enter the hold in hours, 1 to 720."))
+        if (hours != 0L && hours !in 1..MAX_HOURS) return sheet(sh.copy(error = "A hold is 1 to 720 hours (30 days)."))
+
+        if (hours == 0L) {
+            return review(
+                title = "Send ${fmt(amount)} $symbol from Checking",
+                rows = listOf("To" to groupedAddress(to), "Arrives" to "Immediately. An instant send can't be cancelled."),
+                note = "$check Choose a hold instead if you might want to undo it.",
+                calls = listOf(Call(SepoliaConfig.TOKEN, SafeChainCalls.transfer(to, amount))),
+                doneTitle = "Sent",
+            )
+        }
+
+        val hold = holdText(hours)
+        val pay = {
+            review(
+                title = "Send ${fmt(amount)} $symbol from Checking",
+                step = if (s.escrowAllowance < amount) "Step 2 of 2" else null,
+                rows = listOf(
+                    "To" to groupedAddress(to),
+                    "Arrives" to "In $hold. Until then you can cancel, and the money comes straight back to Checking.",
+                    "Held by" to "SafeChain's payment escrow (no owner, can't be changed)\n${groupedAddress(SepoliaConfig.ESCROW)}",
+                ),
+                note = check,
+                calls = listOf(Call(SepoliaConfig.ESCROW, SafeChainCalls.createPayment(SepoliaConfig.TOKEN, to, amount, hours * HOUR))),
+                doneTitle = "Sending · arrives in $hold",
+            )
+        }
+        if (s.escrowAllowance >= amount) return pay()
+        // Once: let the escrow take what Checking sends with a hold. It only ever takes from the card, for a
+        // payment the card itself creates, so nobody else can use this approval.
+        review(
+            title = "Turn on protected payments",
+            step = "Step 1 of 2 · only once",
+            rows = listOf(
+                "Allows" to "SafeChain's payment escrow to hold what you send from Checking with a hold, until it's delivered or you cancel",
+                "Escrow" to groupedAddress(SepoliaConfig.ESCROW),
+            ),
+            note = "You won't be asked again.",
+            calls = listOf(Call(SepoliaConfig.TOKEN, SafeChainCalls.approve(SepoliaConfig.ESCROW, MAX_UINT))),
+            doneTitle = "Protected payments on",
+        ) { pay() }
+    }
+
+    override fun onCancelPayment(id: String) {
+        val p = snapshot?.payments?.firstOrNull { it.id.toString() == id } ?: return
+        val amount = money(p.amount)
+        review(
+            title = "Cancel this payment",
+            rows = listOf("Amount" to amount, "Was going to" to groupedAddress(p.recipient)),
+            note = "The money comes straight back to Checking.",
+            calls = listOf(Call(SepoliaConfig.ESCROW, SafeChainCalls.cancelPayment(p.id))),
+            doneTitle = "Cancelled",
+        ) {
+            sheet(SheetUM.Result(ok = true, title = "Cancelled", text = "$amount is back in Checking.", url = null))
+        }
+    }
+
+    override fun onSettlePayment(id: String) {
+        val p = snapshot?.payments?.firstOrNull { it.id.toString() == id } ?: return
+        review(
+            title = "Deliver payment #$id",
+            rows = listOf("Amount" to money(p.amount), "To" to groupedAddress(p.recipient)),
+            note = "It's final; this delivers it. Anyone can do this step, you just pay the fee.",
+            calls = listOf(Call(SepoliaConfig.ESCROW, SafeChainCalls.settlePayment(p.id))),
+            doneTitle = "Payment #$id delivered",
+        )
     }
 
     override fun onCancelWithdrawal(id: String) {
@@ -978,6 +1154,23 @@ internal class SafeChainModel @Inject constructor(
         const val SECONDS_PER_BLOCK = 12L
         const val POLICY_NEW_RECOVERY = 1
         const val HOURS_PER_DAY = 24L
+        const val HOURS_PER_WEEK = 168L
+        const val HOLD_CUSTOM = "custom"
+        const val MAX_ACTIVITY_ROWS = 30
+        val ESCROW_KINDS = setOf(
+            ActivityView.Kind.PaymentSent,
+            ActivityView.Kind.PaymentReceived,
+            ActivityView.Kind.PaymentCancelled,
+            ActivityView.Kind.PaymentSettled,
+        )
+
+        /** 1 → "1 hour", 24 → "1 day", 72 → "3 days", 168 → "1 week", 30 → "30 hours". */
+        fun holdText(hours: Long): String = when {
+            hours == 1L -> "1 hour"
+            hours == HOURS_PER_WEEK -> "1 week"
+            hours % HOURS_PER_DAY == 0L -> (hours / HOURS_PER_DAY).let { if (it == 1L) "1 day" else "$it days" }
+            else -> "$hours hours"
+        }
         const val DEMO_KEY_BYTES = 65
         const val DEMO_STEP_MS = 900L
         val DEMO_FEE: BigInteger = BigInteger.valueOf(1_000_000_000)

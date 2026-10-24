@@ -105,12 +105,17 @@ internal object SafeChainCalls {
     /** A plain transfer into a vault counts as a deposit: one tap instead of approve + deposit. */
     fun transfer(to: String, amount: BigInteger) = Abi.call("transfer(address,uint256)", addr(to), uint(amount))
     fun balanceOf(owner: String) = Abi.call("balanceOf(address)", addr(owner))
+    fun allowance(owner: String, spender: String) = Abi.call("allowance(address,address)", addr(owner), addr(spender))
 
     // Escrow
     fun createPayment(token: String, recipient: String, amount: BigInteger, protectionSeconds: Long) = Abi.call(
         "createPayment(address,address,uint256,uint64)", addr(token), addr(recipient), uint(amount), uint(protectionSeconds),
     )
     fun cancelPayment(id: BigInteger) = Abi.call("cancelPayment(uint256)", uint(id))
+    fun settlePayment(id: BigInteger) = Abi.call("settlePayment(uint256)", uint(id))
+    /** (sender, createdAt, recipient, deadline, status, token, amount): seven static words. */
+    fun getPayment(id: BigInteger) = Abi.call("getPayment(uint256)", uint(id))
+    fun paymentState(id: BigInteger) = Abi.call("paymentState(uint256)", uint(id))
 
     // Factory
     @Suppress("LongParameterList")

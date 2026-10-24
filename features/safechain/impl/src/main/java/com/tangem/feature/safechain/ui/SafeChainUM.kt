@@ -25,6 +25,10 @@ internal data class SafeChainUM(
     /** Too little ETH on the phone key to pay for an emergency lock. */
     val phoneKeyLow: Boolean = false,
     val vault: VaultUM? = null,
+    /** Payments on their way, from both accounts (and protected payments coming in), soonest first. */
+    val upcoming: List<WithdrawalUM> = emptyList(),
+    /** Both accounts' history, newest first. */
+    val activity: List<ActivityUM> = emptyList(),
     /** Older vaults of this card that still hold money or have a move under way. */
     val previous: List<PreviousVaultUM> = emptyList(),
     val setup: SetupUM = SetupUM(),
@@ -81,9 +85,15 @@ internal data class PreviousVaultUM(
     val moving: List<WithdrawalUM>,
 )
 
+/** Where a payment comes from: a Savings withdrawal, or a protected payment from Checking. */
+internal enum class Source { Savings, Checking }
+
 @Immutable
 internal data class WithdrawalUM(
     val id: String,
+    val source: Source = Source.Savings,
+    /** A protected payment someone is sending to this card (shown, not cancellable here). */
+    val incoming: Boolean = false,
     val amount: String,
     val to: String,
     /** Who it's going to, in words: "Your Checking", "Your new Savings", or the short address. */
@@ -144,7 +154,28 @@ internal sealed interface SheetUM {
     /** Checking → Savings (one card tap, instant). */
     data class AddFunds(val amount: String = "", val max: String, val error: String? = null) : SheetUM
 
-    /** Savings → anyone, or → your own Checking ([toChecking]); waits out the hold either way. */
+    /**
+     * Send from either account. Checking: instant, or with a hold you choose (1 hour to 30 days) through the
+     * protected-payment escrow, cancellable until it ends. Savings: always its own hold.
+     */
+    data class Send(
+        val from: Source,
+        val amount: String = "",
+        val to: String = "",
+        val checkingMax: String,
+        val savingsMax: String,
+        /** The Savings hold, e.g. "24 hours"; null when there is no Savings yet. */
+        val savingsHold: String?,
+        val savingsLocked: Boolean = false,
+        /** Hours for a Checking send: "0" (instant), "1", "24", "72", "168", or "custom". */
+        val hold: String = "24",
+        val customHours: String = "",
+        val error: String? = null,
+    ) : SheetUM {
+        val max: String get() = if (from == Source.Checking) checkingMax else savingsMax
+    }
+
+    /** Savings → your own Checking; waits out the hold. */
     data class Withdraw(
         val amount: String = "",
         val to: String = "",
@@ -197,6 +228,11 @@ internal interface SafeChainActions {
 
     // everyday
     fun onOpenWithdraw()
+    fun onSendFrom(source: Source)
+    fun onHoldChange(hours: String)
+    fun onCustomHoursChange(value: String)
+    fun onCancelPayment(id: String)
+    fun onSettlePayment(id: String)
     fun onOpenReceive()
     fun onOpenMove()
     fun onMoveToSavings()

@@ -11,6 +11,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -124,12 +126,12 @@ private fun LazyListScope.home(state: SafeChainUM, v: VaultUM, actions: SafeChai
     v.alerts.forEach { a -> item(key = a) { Alert(a) } }
     state.previous.forEach { p -> item(key = "prev${p.address}") { PreviousSavings(p, actions) } }
     v.backupChange?.let { b -> item { BackupChange(b, actions) } }
-    if (v.pending.isNotEmpty()) {
+    if (state.upcoming.isNotEmpty()) {
         item { SectionTitle("Upcoming") }
-        item { Upcoming(v.pending, actions) }
+        item { Upcoming(state.upcoming, actions) }
     }
     item { SectionTitle("Activity") }
-    item { ActivityList(v.activity) }
+    item { ActivityList(state.activity) }
     item { SectionTitle("Protection") }
     item { Protection(state, v, actions) }
 }
@@ -316,7 +318,7 @@ private fun QuickActions(v: VaultUM, actions: SafeChainActions) = Row(
     Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 4.dp),
     horizontalArrangement = Arrangement.SpaceBetween,
 ) {
-    QuickAction("Send", R.drawable.ic_arrow_up_24, enabled = v.isPrimary && !v.locked, onClick = actions::onOpenWithdraw)
+    QuickAction("Send", R.drawable.ic_arrow_up_24, enabled = v.isPrimary, onClick = actions::onOpenWithdraw)
     QuickAction("Receive", R.drawable.ic_arrow_down_24, enabled = true, onClick = actions::onOpenReceive)
     QuickAction("Move", R.drawable.ic_exchange_vertical_24, enabled = v.isPrimary, onClick = actions::onOpenMove)
 }
@@ -345,32 +347,51 @@ private fun Upcoming(items: List<WithdrawalUM>, actions: SafeChainActions) = Car
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Badge(R.drawable.ic_arrow_up_24, Amber, AmberBg)
+            if (w.incoming) Badge(R.drawable.ic_arrow_down_24, Green, GreenBg) else Badge(R.drawable.ic_arrow_up_24, Amber, AmberBg)
             Column(Modifier.weight(1f)) {
                 Text(
-                    "To ${w.toLabel}",
+                    if (w.incoming) "From ${w.toLabel}" else "To ${w.toLabel}",
                     style = TangemTheme.typography.subtitle1,
                     color = TangemTheme.colors.text.primary1,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    w.countdown ?: "Ready to deliver",
+                    listOf(
+                        w.countdown ?: "Ready to deliver",
+                        when {
+                            w.incoming -> "to Checking"
+                            w.source == Source.Checking -> "from Checking"
+                            else -> "from Savings"
+                        },
+                    ).joinToString(" · "),
                     style = TangemTheme.typography.caption2,
                     color = if (w.isFinal) Green else TangemTheme.colors.text.tertiary,
                 )
             }
-            Text("−${w.amount.substringBefore(" ")}", style = TangemTheme.typography.subtitle1, color = TangemTheme.colors.text.primary1)
+            Text(
+                (if (w.incoming) "+" else "−") + w.amount.substringBefore(" "),
+                style = TangemTheme.typography.subtitle1,
+                color = if (w.incoming) Green else TangemTheme.colors.text.primary1,
+            )
         }
-        if (!w.isFinal) Progress(w.progress, Amber, AmberBg)
+        if (!w.isFinal) Progress(w.progress, if (w.incoming) Green else Amber, if (w.incoming) GreenBg else AmberBg)
         if (w.disputed) Text("⚠ Your data sources disagree about this payment", color = Red, style = TangemTheme.typography.caption2)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (w.canCancel) SmallButton("Cancel", Red, RedBg, R.drawable.ic_close_24) { actions.onCancelWithdrawal(w.id) }
-            if (w.canRelease) SmallButton("Deliver now", Green, GreenBg, R.drawable.ic_check_24) { actions.onReleaseWithdrawal(w.id) }
+            if (w.canCancel) {
+                SmallButton("Cancel", Red, RedBg, R.drawable.ic_close_24) {
+                    if (w.source == Source.Checking) actions.onCancelPayment(w.id) else actions.onCancelWithdrawal(w.id)
+                }
+            }
+            if (w.canRelease) {
+                SmallButton("Deliver now", Green, GreenBg, R.drawable.ic_check_24) {
+                    if (w.source == Source.Checking) actions.onSettlePayment(w.id) else actions.onReleaseWithdrawal(w.id)
+                }
+            }
         }
     }
     Text(
-        "Didn't make one of these? Cancel it before it arrives and the money goes straight back to Savings.",
+        "Didn't make one of these? Cancel it before it arrives and the money goes straight back to the account it came from.",
         style = TangemTheme.typography.caption2,
         color = TangemTheme.colors.text.tertiary,
     )
@@ -807,6 +828,7 @@ private fun AddressField(value: String, label: String, onChange: (String) -> Uni
 private fun FormPage(state: SafeChainUM, actions: SafeChainActions) {
     val sheet = state.sheet
     val title = when (sheet) {
+        is SheetUM.Send -> "Send"
         is SheetUM.Withdraw -> if (sheet.toChecking) "Move to Checking" else "Send"
         is SheetUM.AddFunds -> "Move to Savings"
         is SheetUM.OtherWallet -> "Backup wallet"
@@ -832,6 +854,7 @@ private fun FormPage(state: SafeChainUM, actions: SafeChainActions) {
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             when (sheet) {
+                is SheetUM.Send -> SendPage(sheet, actions)
                 is SheetUM.Withdraw -> SendForm(sheet, state, actions)
                 is SheetUM.AddFunds -> MoveToSavingsForm(sheet, actions)
                 is SheetUM.OtherWallet -> OtherWalletForm(sheet, actions)
@@ -845,6 +868,12 @@ private fun FormPage(state: SafeChainUM, actions: SafeChainActions) {
                 } else {
                     Triple("Review", actions::onOtherWalletContinue, sheet.signature.isNotBlank())
                 }
+            is SheetUM.Send -> Triple(
+                "Review",
+                actions::onContinue,
+                sheet.amount.isNotBlank() && sheet.to.isNotBlank() &&
+                    (sheet.from == Source.Savings || sheet.hold != HOLD_CUSTOM || sheet.customHours.isNotBlank()),
+            )
             is SheetUM.Withdraw -> Triple("Review", actions::onContinue, sheet.amount.isNotBlank() && (sheet.toChecking || sheet.to.isNotBlank()))
             else -> Triple("Review", actions::onContinue, (sheet as? SheetUM.AddFunds)?.amount?.isNotBlank() == true)
         }
@@ -937,6 +966,163 @@ private fun SendForm(sh: SheetUM.Withdraw, state: SafeChainUM, actions: SafeChai
     sh.error?.let { Text(it, color = Red, style = TangemTheme.typography.body2) }
 }
 
+private const val HOLD_CUSTOM = "custom"
+
+/** Hold choices for a Checking send: hours → label. "0" is instant (no escrow, can't be undone). */
+private val HOLDS = listOf("1" to "1 hour", "24" to "1 day", "72" to "3 days", "168" to "1 week", HOLD_CUSTOM to "Custom", "0" to "Instant")
+
+/**
+ * Send from either account. Checking sends instantly or with a hold you choose (through the escrow, cancellable
+ * until it ends); Savings always uses its own hold. One sentence under the choices says exactly what happens.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SendPage(sh: SheetUM.Send, actions: SafeChainActions) {
+    val clipboard = LocalClipboardManager.current
+    Text("From", style = TangemTheme.typography.subtitle1, color = TangemTheme.colors.text.primary1)
+    Column(
+        Modifier.fillMaxWidth().clip(CardShape).background(TangemTheme.colors.background.primary),
+    ) {
+        AccountChoice(
+            icon = R.drawable.ic_tangem_card_24,
+            tint = Blue,
+            tintBg = BlueBg,
+            name = "Checking",
+            detail = "${sh.checkingMax} ${SepoliaConfig.TOKEN_SYMBOL} available",
+            selected = sh.from == Source.Checking,
+            enabled = true,
+            onClick = { actions.onSendFrom(Source.Checking) },
+        )
+        Box(Modifier.padding(start = 68.dp)) { Divider() }
+        AccountChoice(
+            icon = R.drawable.ic_shield_24,
+            tint = Green,
+            tintBg = GreenBg,
+            name = "Savings",
+            detail = when {
+                sh.savingsHold == null -> "Open Savings first"
+                sh.savingsLocked -> "Locked"
+                else -> "${sh.savingsMax} ${SepoliaConfig.TOKEN_SYMBOL} available · ${sh.savingsHold} hold"
+            },
+            selected = sh.from == Source.Savings,
+            enabled = sh.savingsHold != null && !sh.savingsLocked,
+            onClick = { actions.onSendFrom(Source.Savings) },
+        )
+    }
+
+    AmountField(sh.amount, sh.max, actions::onAmountChange, actions::onMax)
+    AddressField(
+        value = sh.to,
+        label = "To address",
+        onChange = actions::onDestinationChange,
+        onPaste = { clipboard.getText()?.text?.let(actions::onDestinationChange) },
+        onScan = actions::onScanDestination,
+    )
+
+    if (sh.from == Source.Checking) {
+        Text("Hold", style = TangemTheme.typography.subtitle1, color = TangemTheme.colors.text.primary1)
+        // Every choice visible at once (wrapping), with Instant last: protection is the default.
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            HOLDS.forEach { (value, label) ->
+                val on = sh.hold == value
+                Text(
+                    label,
+                    color = if (on) TangemTheme.colors.text.primary2 else TangemTheme.colors.text.primary1,
+                    style = TangemTheme.typography.button,
+                    modifier = Modifier.clip(PillShape)
+                        .background(if (on) TangemTheme.colors.button.primary else TangemTheme.colors.background.primary)
+                        .clickable { actions.onHoldChange(value) }
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                )
+            }
+        }
+        if (sh.hold == HOLD_CUSTOM) {
+            OutlinedTextField(
+                value = sh.customHours,
+                onValueChange = actions::onCustomHoursChange,
+                label = { Text("Hold") },
+                suffix = { Text("hours") },
+                supportingText = { Text("1 to 720 hours (30 days)") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                singleLine = true,
+                colors = fieldColors(),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+
+    val customHours = sh.customHours.toLongOrNull()
+    val holdLabel = when {
+        sh.from == Source.Savings -> sh.savingsHold ?: "the Savings hold"
+        sh.hold == HOLD_CUSTOM -> customHours?.let { holdLabel(it) } ?: "the hold you choose"
+        else -> HOLDS.firstOrNull { it.first == sh.hold }?.second ?: ""
+    }
+    when {
+        sh.from == Source.Checking && sh.hold == "0" ->
+            Warning("Arrives immediately and can't be undone. Pick a hold if you might want to cancel.")
+        else -> Note(
+            R.drawable.ic_circle_clock_24,
+            "Arrives in $holdLabel. Until then you can cancel it, and the money comes straight back to " +
+                (if (sh.from == Source.Checking) "Checking." else "Savings."),
+        )
+    }
+    sh.error?.let { Text(it, color = Red, style = TangemTheme.typography.body2) }
+}
+
+private fun holdLabel(hours: Long): String = when {
+    hours == 1L -> "1 hour"
+    hours == 168L -> "1 week"
+    hours % 24 == 0L -> (hours / 24).let { if (it == 1L) "1 day" else "$it days" }
+    else -> "$hours hours"
+}
+
+@Composable
+@Suppress("LongParameterList")
+private fun AccountChoice(
+    @DrawableRes icon: Int,
+    tint: Color,
+    tintBg: Color,
+    name: String,
+    detail: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) = Row(
+    Modifier
+        .fillMaxWidth()
+        .clickable(enabled = enabled, onClick = onClick)
+        .padding(horizontal = 16.dp, vertical = 14.dp)
+        .then(if (enabled) Modifier else Modifier.alpha(DISABLED_ALPHA)),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(14.dp),
+) {
+    Badge(icon, tint, tintBg, size = 38.dp)
+    Column(Modifier.weight(1f)) {
+        Text(name, style = TangemTheme.typography.subtitle1, color = TangemTheme.colors.text.primary1)
+        Text(detail, style = TangemTheme.typography.caption2, color = TangemTheme.colors.text.tertiary)
+    }
+    // A radio mark: filled ring when chosen.
+    Box(
+        Modifier
+            .size(22.dp)
+            .clip(CircleShape)
+            .border(2.dp, if (selected) TangemTheme.colors.icon.primary1 else TangemTheme.colors.stroke.primary, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (selected) Box(Modifier.size(11.dp).clip(CircleShape).background(TangemTheme.colors.icon.primary1))
+    }
+}
+
+@Composable
+private fun Warning(text: String) = Row(
+    Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(AmberBg).padding(14.dp),
+    horizontalArrangement = Arrangement.spacedBy(10.dp),
+) {
+    Icon(painterResource(R.drawable.ic_warning_20), null, tint = Amber, modifier = Modifier.size(18.dp))
+    Text(text, style = TangemTheme.typography.body2, color = Amber)
+}
+
 @Composable
 private fun MoveToSavingsForm(sh: SheetUM.AddFunds, actions: SafeChainActions) {
     FromTo(
@@ -987,7 +1173,8 @@ private fun OtherWalletForm(o: SheetUM.OtherWallet, actions: SafeChainActions) {
 @Composable
 private fun Sheet(sheet: SheetUM, actions: SafeChainActions) {
     when (sheet) {
-        SheetUM.None, is SheetUM.Withdraw, is SheetUM.AddFunds, is SheetUM.OtherWallet -> return
+        // Forms are full pages (FormPage), not sheets.
+        SheetUM.None, is SheetUM.Send, is SheetUM.Withdraw, is SheetUM.AddFunds, is SheetUM.OtherWallet -> return
         else -> Unit
     }
     val canDismiss = sheet !is SheetUM.Working

@@ -18,6 +18,9 @@ internal data class ActivityView(
         Deposited, WithdrawalRequested, HavenWithdrawalRequested, WithdrawalCancelled, WithdrawalExecuted,
         VoidedReleased, Locked, Unlocked, ReplacementScheduled, ReplacementCancelled, PrimaryReplaced,
         RecoveryReplaced, HavenReplaced, DelayChanged, SecurityChange,
+
+        // Checking (the card's own account) and its protected payments through the escrow
+        CheckingSent, CheckingReceived, PaymentSent, PaymentReceived, PaymentCancelled, PaymentSettled,
     }
 
     companion object {
@@ -66,6 +69,10 @@ internal data class ActivityView(
                     base.copy(address = addr(2), by = addr(1))
                 Kind.ReplacementCancelled -> base.copy(address = addr(1))
                 Kind.DelayChanged, Kind.SecurityChange -> base
+                // Checking and escrow entries are built by VaultReader, never decoded from a vault's log.
+                Kind.CheckingSent, Kind.CheckingReceived, Kind.PaymentSent, Kind.PaymentReceived,
+                Kind.PaymentCancelled, Kind.PaymentSettled,
+                -> base
             }
         }
     }
